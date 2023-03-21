@@ -1,0 +1,3148 @@
+#how much does the uneven sampling (2/3 Probiotic 1/3 placebo) effect the statisitcs
+#jaccard vs Aitchison distance 
+#https://microbiome.github.io/course_2021_radboud/importing-microbiome-data.html
+#http://www.bioconductor.org/packages/release/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC.html
+#To do
+#alpha diversity - Done
+#beta diversity - PCoA Done 
+#genera - barplot, rel. abundance 
+#relative abundance table - genus - Done
+#timepoints - T0, T10, T12 - genus/species - barplot
+#remove T0 from statistical analysis - difference between probiotic and placebo
+#metadata - also values from gluten
+#differential abundance for lactobacillus and bacilli
+  #http://joey711.github.io/phyloseq-extensions/DESeq2.html
+#are lactobacilli and bacilli differently abundant between placebo and probiotic? timepoints?
+
+# •Lactiplantibacillus plantarum subsp. plantarum DSM33363
+# •L.plantarum subsp. plantarum DSM33364
+# •Lacticaseibacillus paracasei subsp. paracasei DSM33373
+# •Limosilactobacillus reuteri DSM33374
+# •Bacillus megaterium DSM33300
+# •Bacillus pumilus DSM33335
+# •B.pumilus DSM33297
+
+#library(BiocManager)
+#BiocManager::install("microbiome")
+
+#clear environment
+rm(list=ls())
+
+#https://bioconductor.org/help/course-materials/2017/BioC2017/Day1/Workshops/Microbiome/MicrobiomeWorkflowII.html#abstract
+#set working directory
+library("rstudioapi") 
+setwd(dirname(getActiveDocumentContext()$path))
+getwd()
+
+library(phyloseq)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(microbiome)
+library("viridis")
+library(RColorBrewer)
+library("ggpubr")
+library(rstatix)
+library(randomcoloR)
+library("DESeq2")
+library("vegan")
+
+#colors
+library(ggpubfigs)
+#?friendly_pal()
+pal29 <- friendly_pal(29, name = "muted_nine", type = "continuous")
+pal32 <- friendly_pal(32, name = "muted_nine", type = "continuous")
+pal30 <-friendly_pal(30, name = "muted_nine", type = "continuous")
+pal24 <-friendly_pal(24, name = "muted_nine", type = "continuous")
+
+#vectors
+levels_sampling <- c("T0", "T1", "T3", "T5", "T7", "T10", "T12")
+levels_sampling_new <- c("T0","T1","T2","T3","T4","T5","T6")
+levels_diversity =c("Observed","Chao1", "Shannon", "Simpson", "Fisher")
+colors_treatment <-c("#E41A1C", "#377EB8")
+my_symbols=c(0,15,8,19,17,18,1)
+my_symbols_sub =c(0,15,18,1)
+
+#import OTU table ####
+otu <- read.csv("../from_Claudia/otu_TueBarcodeID.csv", sep = ";")
+#View(otu)
+#ncol(otu) 
+#208 samples in the otu table
+
+otu <- otu %>% column_to_rownames(var = "id")
+
+#colnames_otu <- colnames(otu)s
+#colnames_otu
+#this is just to print the sample names into a file, I have troubles with the sample names
+#write.table(colnames_otu, "samples.sequenced.csv")
+
+#import taxa name table ####
+taxtable <- read.csv("../from_Claudia/id_taxa_relation.csv", sep = ";") %>%
+  column_to_rownames(var = "normalized")
+#View(taxtable)
+
+#class(otu)
+#class(taxtable)
+
+taxtable <- as.matrix(taxtable)
+
+#create phyloseq object####
+#library("phyloseq")
+OTU = otu_table(otu, taxa_are_rows = TRUE)
+TAX = tax_table(taxtable)
+physeq = phyloseq(OTU, TAX)
+
+
+#OTU
+#View(TAX)
+#View(OTU)
+#colnames(OTU)
+#ncol(OTU)
+
+#physeq
+
+physeq
+
+#load metadata ####
+meta <- read.csv("../metadata_new.txt", header = TRUE, sep = "\t") %>%
+  column_to_rownames(var = "xBarcode")
+
+#View(meta)
+
+#View(meta)
+#load metadata as sample data object for phyloseq
+sampledata = sample_data(meta)
+#sample_names(physeq)
+physeq = merge_phyloseq(physeq, sampledata)
+
+#physeq
+
+#remove the two drop-out samples
+#X4050718448 and X4050773244
+
+physeq <- subset_samples(physeq, Treatment%in%c("Probiotic", "Placebo"))
+physeq
+#write.csv(sample_data(physeq), "metadata_sequenced_evonik_gluten.csv")
+
+#check if there are any taxa that have no reads in any sample 
+
+any(taxa_sums(physeq) == 0)
+#TRUE - we removed samples
+#if so, how many?
+sum(taxa_sums(physeq) == 0) #33
+
+#in case there are taxa with zero reads, here's how to remove them:
+#save the original objevt, in case you need it later
+physeq_original = physeq
+physeq = prune_taxa(taxa_sums(physeq) > 0, physeq)
+
+
+#check read numbers
+#readsumsdf = data.frame(nreads = sort(taxa_sums(physeq), TRUE), sorted = 1:ntaxa(physeq), 
+#                        type = "OTUs")
+#readsumsdf = rbind(readsumsdf, data.frame(nreads = sort(sample_sums(physeq), 
+#                                                        TRUE), sorted = 1:nsamples(physeq), type = "Samples"))
+
+#make a read number plot
+#title = "Total number of reads"
+#p = ggplot(readsumsdf, aes(x = sorted, y = nreads)) + geom_bar(stat = "identity")
+#p + ggtitle(title) + scale_y_log10() + facet_wrap(~type, 1, scales = "free")
+
+
+#alpha diversity on counts ####
+
+#### alpha diversity plot ####
+#https://joey711.github.io/phyloseq/plot_richness-examples.html
+#set the theme and colors for the plot
+theme_set(theme_bw())
+#pal = "Set1"
+#scale_colour_discrete <-  function(palname=pal, ...){
+#  scale_colour_brewer(palette=palname, ...)
+#}
+#scale_fill_discrete <-  function(palname=pal, ...){
+#  scale_fill_brewer(palette=palname, ...)
+#}
+#transform data to integers (round them up to closest integer)
+physeq
+physeq_int = transform_sample_counts(physeq, round)
+#physeq_int
+#make sure there is no empty values
+physeq_alpha <- prune_taxa(taxa_sums(physeq_int) > 0, physeq_int)
+
+#physeq_alpha
+#taxa_names(physeq2)
+#physeq_alpha()
+plot_richness(physeq_alpha)
+plot_richness(physeq_alpha, measures=c("Chao1", "Shannon"))
+
+plot_richness(physeq_alpha, x="Sampling", color = "Treatment")#, measures=c("Chao1", "Shannon"))
+
+#probiotic vs placebo
+plot_richness(physeq_alpha, x="Treatment", measures=c("Observed", "Chao1", "Shannon", "Simpson", "Fisher"))
+ggsave("alpha_diversity_Treatment.pdf", width = 10, height = 5, dpi = 600)
+
+plot_richness(physeq_alpha, x="Treatment", measures=c("Observed", "Chao1", "Shannon", "Simpson", "Fisher")) +
+  geom_boxplot() +
+  geom_point(position = position_dodge(width = 0.75))
+ggsave("alpha_diversity_Treatment_boxplot.pdf", width = 10, height = 5, dpi = 600)
+
+
+#changing the order of the variables
+#https://github.com/joey711/phyloseq/issues/1075
+p <- plot_richness(physeq_alpha, x="Sampling", color = "Treatment")#, measures=c("Chao1", "Shannon"))
+levels_sampling <- c("T0", "T1", "T3", "T5", "T7", "T10", "T12")
+p$data$Sampling <- factor(p$data$Sampling, levels = levels_sampling)
+print(p)
+ggsave("alpha_diversity_Treatment_time.pdf", width = 10, height = 5, dpi = 600)
+
+#
+p <- plot_richness(physeq_alpha, x="Sampling", color = "Treatment")#, measures=c("Chao1", "Shannon"))
+levels_sampling <- c("T0", "T1", "T3", "T5", "T7", "T10", "T12")
+p$data$Sampling <- factor(p$data$Sampling, levels = levels_sampling)
+print(p)
+ggsave("alpha_diversity_Treatment_time.pdf", width = 10, height = 5, dpi = 600)
+
+#with boxplot
+p <- plot_richness(physeq_alpha, x="Sampling", color = "Treatment") + #, measures=c("Chao1", "Shannon")) 
+  geom_boxplot()
+levels_sampling <- c("T0", "T1", "T3", "T5", "T7", "T10", "T12")
+p$data$Sampling <- factor(p$data$Sampling, levels = levels_sampling)
+print(p)
+ggsave("alpha_diversity_Treatment_time_boxplot.pdf", width = 15, height = 5, dpi = 600)
+
+####alpha diversity statistics ####
+
+#export the alpha diversity estimates from phyloseq
+rich = estimate_richness(physeq_alpha, measures = c("Observed", "Chao1", "Shannon", "Simpson", "Fisher")) %>%
+  rownames_to_column(var="sample")
+
+rich_shannon = estimate_richness(physeq_alpha, measures = c("Shannon")) %>%
+  rownames_to_column(var="sample")
+
+rich 
+
+meta_alpha <- read.csv("../metadata_new.txt", header = TRUE, sep = "\t")
+View(meta_alpha)
+
+rich_meta <- left_join(rich, meta_alpha, by=c("sample" = "xBarcode")) %>%
+  select(-c(se.chao1))
+
+rich_shannon_meta <- left_join(rich, meta_alpha, by=c("sample" = "xBarcode")) 
+
+head(rich_meta)
+colnames(rich_meta)
+View(rich_meta)
+
+write.csv(rich_meta, "alpha_diversity.csv")
+
+
+#make line plot with shannon values
+symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, Inf), 
+                    symbols = c("****", "***", "**", "*", "ns"))
+
+
+
+rich_shannon_meta$Sampling<-factor(rich_shannon_meta$Sampling, levels = levels_sampling_new)
+rich_shannon_meta$Treatment<-factor(rich_shannon_meta$Treatment, levels = c("Probiotic", "Placebo"))
+
+ggplot(rich_shannon_meta, aes(x=Sampling, y=Shannon, fill=Treatment)) + 
+  geom_boxplot() + 
+  scale_fill_manual(values=c("#377EB8","#E41A1C" )) 
+#  stat_compare_means(size=1.5) 
+#  stat_compare_means(aes(label = after_stat(p.signif)),size=3) 
+  
+ggsave("alpha_diversity_shannon_time_treatment_newname_order.pdf", width = 10, height = 6, dpi = 600)
+ggsave("alpha_diversity_shannon_time_treatment_newname_order.png", width = 10, height = 6, dpi = 600)
+
+colors_treatment <-c("#E41A1C", "#377EB8")
+#make long table using tidyr
+rich_meta_melt <- pivot_longer(rich_meta,cols = -c(sample, Code:Treatment), names_to = "diversity", values_to = "value")
+View(rich_meta_melt)
+
+#make boxplot with alpha diversity
+levels_diversity =c("Observed","Chao1", "Shannon", "Simpson", "Fisher")
+rich_meta_melt$diversity <- factor(rich_meta_melt$diversity, levels = levels_diversity)
+rich_meta_melt$Sampling <- factor(rich_meta_melt$Sampling, levels = levels_sampling_new)
+rich_meta_melt$Treatment <- factor(rich_meta_melt$Treatment, levels = c("Probiotic", "Placebo"))
+
+library(ggpubr)
+library(ggplot2)
+rich_meta_melt
+ggplot(rich_meta_melt, aes(x=Sampling, y=value, fill=Treatment)) + #for plot without time points, use x=Treatment
+  geom_boxplot() +
+ # stat_summary(fun=mean, geom="point", shape=2, size=2, color="black", fill="black") + #adds the mean as a triangle
+  facet_wrap(. ~ diversity, scales='free_y', ncol = 7, nrow = 5) +
+  theme(axis.title = element_blank()) +
+ # stat_compare_means(aes(label = after_stat(p.signif)),size=2) +
+ # stat_compare_means(size=3) +
+  scale_fill_manual(values=c("#377EB8", "#E41A1C")) +
+  theme_bw() + 
+  ylab("Diversity index")
+  
+
+#get the values from the boxplot
+?ggplot_build()
+ggplot_build(boxplot)
+ggplot_build(boxplot)$data
+?stat_compare_means()
+?facet_wrap()
+View(rich_meta_melt)
+
+ggsave("alpha_diversity_ggplot_treatment_time_bw_newname_order.pdf", width = 11, height = 6, dpi = 600)
+ggsave("alpha_diversity_ggplot_treatment_time_bw_newname_order.png", width = 11, height = 6, dpi = 600)
+
+#get values from boxplot
+
+
+#test 95% confidence
+#https://stackoverflow.com/questions/21310609/ggplot2-box-whisker-plot-show-95-confidence-intervals-remove-outliers
+quantiles_95 <- function(x) {
+  r <- quantile(x, probs=c(0.05, 0.25, 0.5, 0.75, 0.95))
+  names(r) <- c("ymin", "lower", "middle", "upper", "ymax")
+  r
+}
+
+ggplot(rich_meta_melt, aes(x=Treatment, y=value, fill=Treatment)) +
+ # guides(fill=F) +
+  stat_summary(fun.data = quantiles_95, geom="boxplot")  +
+  facet_wrap(. ~ diversity, scales='free_y', ncol = 5) +
+  theme(axis.title = element_blank()) +
+  stat_compare_means(size=3) +
+  theme_bw() +
+  scale_fill_manual(values=c( "#377EB8", "#E41A1C"))
+
+ggsave("alpha_diversity_ggplot_shannon_treatment_time_bw_newname_order.pdf", width = 11, height = 6, dpi = 600)
+ggsave("alpha_diversity_ggplot_shannon_treatment_time_bw_newname_order.png", width = 11, height = 6, dpi = 600)
+
+
+
+#alpha diversity statistics####
+#### with T0 ####
+#install.packages("rstatix")
+#install.packages("ggpubr")
+#library("ggpubr")
+#library(rstatix)
+
+
+##tests treatment####
+#multiple
+kruskal.test(rich$Observed, sample_data(physeq_alpha)$Treatment)
+
+#pairwise placebo vs probiotic
+pairwise.wilcox.test(rich$Observed, sample_data(physeq_alpha)$Treatment, p.adjust.method = "BH")
+
+
+#Pairwise comparisons using Wilcoxon rank sum test with continuity correction 
+
+#data:  rich$Observed and sample_data(physeq_alpha)$Treatment 
+
+#Placebo
+#Probiotic 0.008  
+
+#pairwise placebo vs probiotic
+pairwise.wilcox.test(rich$Shannon, sample_data(physeq_alpha)$Treatment)
+
+#Pairwise comparisons using Wilcoxon rank sum test with continuity correction 
+
+#data:  rich$Shannon and sample_data(physeq_alpha)$Treatment 
+
+#Placebo
+#Probiotic 0.0019 
+
+#P value adjustment method: holm 
+
+#pairwise placebo vs probiotic
+pairwise.wilcox.test(rich$Simpson, sample_data(physeq_alpha)$Treatment)
+
+#Pairwise comparisons using Wilcoxon rank sum test with continuity correction 
+
+#data:  rich$Simpson and sample_data(physeq_alpha)$Treatment 
+
+#Placebo
+#Probiotic 0.0058 
+
+#P value adjustment method: holm 
+
+##statistics probiotics/placebo and time samplings
+
+
+#multiple
+kruskal.test(rich$Treatment, sample_data(physeq_alpha)$Sampling)
+
+
+
+
+#pairwise Bolzano vs Bari
+pairwise.wilcox.test(rich$Observed, sample_data(physeq_alpha)$place)
+
+#Pairwise comparisons using Wilcoxon rank sum test with continuity correction 
+
+#data:  rich$Observed and sample_data(physeq_alpha)$place 
+
+#Bari 
+#Bolzano 0.011
+
+#P value adjustment method: holm 
+#
+
+#multiple
+kruskal.test(rich$Observed, sample_data(physeq_alpha)$Sampling)
+
+#bar plot 20 top genera ####
+#https://github.com/joey711/phyloseq/issues/1197
+#physeq_abund_prune <- prune_taxa(taxa_sums(physeq_abund) > 0.02, physeq_abund)
+
+prune.dat <- prune_taxa(taxa_sums(physeq_abund) > 0.02, physeq_abund) #remove less than 2%
+top20 <- names(sort(taxa_sums(prune.dat), decreasing=TRUE)[1:50])
+top20 #shows 20 results
+
+prune.dat
+
+dat.aglo = tax_glom(prune.dat, taxrank = "genus")
+dat.trans = transform_sample_counts(dat.aglo, function(x) x/sum(x))
+dat.trans.dataframe = psmelt(dat.trans)
+prune.dat.two = prune_taxa(top20, dat.trans)
+test = transform_sample_counts(prune.dat.two, function(x) x/sum(x))
+test.dataframe = psmelt(test)
+dat.dataframe = psmelt(prune.dat.two)
+dat.agr = aggregate(Abundance~Treatment+Sampling+genus, data=dat.dataframe, FUN=mean)
+
+dat.trans
+dat.dataframe
+View(dat.dataframe)
+write.csv(dat.dataframe, "figure.abundance.genera.long.csv")
+write.csv(dat.trans.dataframe, "full.abundance.genera.long.csv")
+View(dat.trans)
+dat.trans
+View(dat.trans.dataframe)
+dat.trans.dataframe.wide <- reshape(dat.trans.dataframe, idvar = "Sample", timevar = "OTU", direction = "wide")
+View(dat.trans.dataframe.wide)
+
+
+OTU1 = as(otu_table(dat.trans), "matrix")
+if(taxa_are_rows(dat.trans)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1) %>%
+  rownames_to_column("id")
+View(OTUdf)
+
+metadata_out = as(sample_data(dat.trans), "matrix") %>%
+  as.data.frame() %>%
+  rownames_to_column("id") 
+View(metadata_out)
+
+sample_meta <- left_join(OTUdf, metadata_out, by="id") %>%
+  t() %>%
+  %>%
+  
+View(sample_meta)
+
+taxa_out = as(tax_table(dat.trans), "matrix") %>%
+  as.data.frame() %>%
+  rownames_to_column("taxa")
+View(taxa_out)
+
+
+#count the amount of colors I need
+colourCount = length(unique(dat.agr$genus))
+colourCount
+
+#change the order of the time
+levels_sampling <- c("T0", "T1", "T3", "T5", "T7", "T10", "T12")
+dat.agr$Sampling <- factor(dat.agr$Sampling, levels = levels_sampling)
+dat.agr$Sampling
+
+
+#colors
+library(ggpubfigs)
+#?friendly_pal()
+pal29 <- friendly_pal(29, name = "muted_nine", type = "continuous")
+#do the plot
+ggplot(dat.agr, aes(x=Sampling, y=Abundance, fill=genus)) + 
+  geom_bar(stat="identity") + 
+  facet_grid(~Treatment, scale="free") + 
+  theme(axis.title.x = element_blank()) + 
+  ylab("Relative abundance") +
+  scale_fill_manual(values = pal29, name = "Genus")
+  
+#save the plot
+ggsave("barplot_top30_abundance_treatment_sampling.pdf", width = 10, height = 5, dpi = 600)
+ggsave("barplot_top30_abundance_treatment_sampling.png", width = 10, height = 5, dpi = 600)
+
+
+#summarize the unclassified by hand in excel
+View(dat.agr)
+dat.agr.wide <- dat.agr %>%
+  pivot_wider(names_from = genus, values_from = Abundance)
+write.table(dat.agr.wide, "top30.taxa.unspecific.csv", sep=",")
+
+#read the table back again
+abund_top30_other<-read.csv("top30.taxa.unspecific.unclassified.csv", 
+                            header=TRUE) %>%
+  pivot_longer(cols=X.Eubacterium..eligens.group:other, 
+               names_to = "genus",
+               values_to = "Abundance")
+
+order_top30<-(c("Agathobacter",                 
+               "Alistipes",                       
+               "Anaerostipes",                    
+               "Bacteroides" ,                    
+               "Bifidobacterium" ,                
+               "Blautia"  ,                       
+               "Christensenellaceae.R.7.group"   ,
+               "Coprococcus"    ,                 
+               "Dorea",                           
+               "Erysipelotrichaceae.UCG.003",     
+               "Escherichia",
+               "X.Eubacterium..eligens.group",    
+               "X.Eubacterium..hallii.group",
+               "Faecalibacterium",                
+               "Fusicatenibacter",                
+               "Lachnospiraceae.NC2004.group"  ,  
+               "Prevotella"         ,   
+               "Prevotellaceae.NK3B31.group" ,    
+               "Roseburia"   ,                    
+               "Ruminococcus",
+               "X.Ruminococcus..gauvreauii.group",
+               "Subdoligranulum"                , 
+               "unclassified" ,                   
+               "other"))     
+  
+labels_top30<-(c("Agathobacter",                 
+                "Alistipes",                       
+                "Anaerostipes",                    
+                "Bacteroides" ,                    
+                "Bifidobacterium" ,                
+                "Blautia"  ,                       
+                "Christensenellaceae R-7 group"   ,
+                "Coprococcus"    ,                 
+                "Dorea",                           
+                "Erysipelotrichaceae UCG-003",     
+                "Escherichia",
+                "Eubacterium eligens group",    
+                "Eubacterium hallii group",
+                "Faecalibacterium",                
+                "Fusicatenibacter",                
+                "Lachnospiraceae NC2004 group"  ,  
+                "Prevotella"         ,   
+                "Prevotellaceae NK3B31 group" ,    
+                "Roseburia"   ,                    
+                "Ruminococcus",
+                "Ruminococcus gauvreauii group",
+                "Subdoligranulum"                , 
+                "Unclassified" ,                   
+                "Other"))    
+
+levels_sampling_new <- c("T0","T1","T2","T3","T4","T5","T6")
+colnames(abund_top30_other)
+#View(abund_top30_other)
+unique(abund_top30_other$genus)
+levels
+abund_top30_other$genus <- factor(abund_top30_other$genus, levels = order_top30)
+abund_top30_other$Sampling <- factor(abund_top30_other$Sampling, levels = levels_sampling_new)
+abund_top30_other$Treatment <- factor(abund_top30_other$Treatment, levels = c("Probiotic", "Placebo"))
+#abund_top30_other$Sampling
+
+ggplot(abund_top30_other, aes(x=Sampling, y=Abundance, fill=genus)) + 
+  geom_bar(stat="identity") + 
+  facet_grid(~Treatment, scale="free") + 
+  theme(axis.title.x = element_blank()) + 
+  ylab("Relative abundance") +
+  scale_fill_manual(values = pal24, 
+                    name = "Genus", 
+                    labels=labels_top30)
+#?scale_fill_manual()
+ggsave("genus_top30_full_newnames_order.png", dpi=600, height = 6, width = 10)
+ggsave("genus_top30_full_newnames_order.pdf", dpi=600, height = 6, width = 10)
+
+#another way top 20####
+#species abundance table both PC and DC
+physeq_abund_prune_genus <- tax_glom(physeq_abund_prune, taxrank = 'genus') # agglomerate taxa
+
+top30 <- names(sort(taxa_sums(physeq_abund_prune_genus), decreasing=TRUE))[1:30]
+top30
+#physeq_abund_prune_top20 <- transform_sample_counts(physeq_abund_filt, function(OTU) OTU/sum(OTU))
+physeq_abund_prune_top30 <- prune_taxa(top30, physeq_abund_prune_genus)
+
+abund.dataframe.top30 = psmelt(physeq_abund_prune_top30)
+abund.dataframe.top30
+ggplot(abund.dataframe.top30, aes(x=Sampling, y=Abundance, fill=genus)) + 
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment, scale="free") +
+  scale_fill_manual(values = pal30)
+
+physeq_abund_filt_top20
+abund.dataframe.top20 = psmelt(physeq_abund_filt_top20)
+
+View(abund.dataframe.top20)
+#
+ggplot(abund.dataframe.top20, aes(x=time, y=Abundance, fill=Species)) + 
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(colon~juice_Andrea, scale="free") +
+  scale_fill_manual(values = pal)
+
+
+?scale_fill_manual()
+#other colors!
+
+#library(RColorBrewer)
+n <-29
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1,n), col=sample(col_vector, n))
+
+#install.packages("randomcoloR")
+#library(randomcoloR)
+n <- 29
+palette <- distinctColorPalette(n)
+
+palette
+
+
+sample_variables(prune.dat)
+top20otus = names(sort(taxa_sums(prune.dat), TRUE)[1:20])
+taxtab20 = cbind(tax_table(prune.dat), genus_20 = NA)
+taxtab20[top20otus, "genus_20"] <- as(tax_table(prune.dat)[top20otus, "Genus"],
+                                      "character")
+tax_table(prune.dat) <- tax_table(taxtab20)
+
+prune.dat <- transform_sample_counts(prune.dat, function(x) 100 * x/sum(x))
+
+title = "Relative Abundance"
+genus_plot2 <- plot_bar(prune.dat, "Site", fill = "genus_20", title = title)
+print(genus_plot2)
+
+#beta diversity ####
+##convert to relative abundance ####
+physeq_abund = transform_sample_counts(physeq, function(x) x / sum(x) )
+physeq_abund
+
+#bar plot top 20 genera ####
+y1 <- tax_glom(physeq, taxrank = 'genus') # agglomerate taxa
+#(y2 = merge_samples(y1, "Partition")) # merge samples on sample variable of interest
+y3 <- transform_sample_counts(y1, function(x) x/sum(x)) #get abundance in %
+y4 <- psmelt(y3) # create dataframe from phyloseq object
+y4$genus <- as.character(y4$genus) #convert to character
+y4$genus[y4$Abundance < 0.01] <- "Genera < 1% abund." #rename genera with < 1% abundance
+
+#set color palette to accommodate the number of genera
+colourCount = length(unique(y4$genus))
+colourCount
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+#library(RColorBrewer)
+#plot
+p <- ggplot(data=y4, aes(x=Sample, y=Abundance, fill=genus))
+p + geom_bar(aes(), stat="identity", position="stack") + 
+  scale_fill_manual(values=getPalette(colourCount)) + 
+  theme(legend.position="bottom") + 
+  guides(fill=guide_legend(nrow=5)) #+ 
+  #facet_grid(Sampling ~ Treatment)
+
+#  facet_wrap(. ~ diversity, scales='free_y', ncol = 5) +
+
+
+##remove taxa <0.02% ####
+
+physeq_abund_prune <- prune_taxa(taxa_sums(physeq_abund) > 0.02, physeq_abund)
+physeq_abund_prune
+
+#re-calculate to 100%
+physeq_abund_prune  = transform_sample_counts(physeq_abund_prune, function(x) x / sum(x) )
+physeq_abund_prune
+
+
+##Ordination####
+levels_sampling
+#my_symbols =c(1,2,3,4,5,6,7)
+physeq.NMDS<- ordinate(physeq_abund_prune, "NMDS", "bray")
+pNMDS <- plot_ordination(physeq_abund_prune, physeq.NMDS, type="sample", color="Treatment", shape="Sampling")
+pNMDS$physeq_abund_prune$Sampling <- factor(pNMDS$physeq_abund_prune$Sampling, levels = levels_sampling)
+pNMDS = pNMDS + scale_shape_manual(values=my_symbols_sub)
+pNMDS
+
+
+
+#PCoA subset dataset ####
+physeq.PCoA.sub <- ordinate(physeq_abund_prune_sub, "PCoA", "bray")
+PCoA.sub <- plot_ordination(physeq_abund_prune_sub, physeq.PCoA.sub, type="sample", color="Code", shape="Sampling")
+PCoA.sub$physeq_abund_prune_sub$Sampling <- factor(PCoA.sub$physeq_abund_prune_sub$Sampling, levels = levels_sampling)
+PCoA.sub$physeq_abund_prune_sub$Code <- factor(PCoA.sub$physeq_abund_prune_sub$Code, levels = levels_sampling)
+PCoA.sub + 
+
+  
+my_symbols=c(15,16,1,2,3,17,18)
+
+#PCoA full dataset ####
+physeq.PCoA.full <- ordinate(physeq_abund_prune, "PCoA", "bray")
+PCoA.full <- plot_ordination(physeq_abund_prune, physeq.PCoA.full, type="sample", color="Code", shape="Sampling")
+PCoA.full$physeq_abund_prune$Sampling <- factor(PCoA.full$physeq_abund_prune$Sampling, 
+                                                       levels = levels_sampling)
+
+PCoA.full +
+  scale_shape_manual(values=my_symbols) 
+  
+
+physeq_abund_prune
+
+
+#only use T0, T10, T12
+##ordination T0,T1,T10,T12####
+
+
+T0 <- subset_samples(physeq, Sampling=="T0")
+T1  <- subset_samples(physeq, Sampling=="T1")
+T10 <- subset_samples(physeq, Sampling=="T10")
+T12 <- subset_samples(physeq, Sampling=="T12")
+T5 <- subset_samples(physeq, Sampling=="T5")
+T6 <- subset_samples(physeq, Sampling=="T6")
+
+physeq_sub <- merge_phyloseq(T1,T10,T12)
+physeq_sub <- merge_phyloseq(T0,T1,T5,T6)
+
+#remove empty
+any(taxa_sums(physeq_sub) == 0)
+#TRUE - we removed samples
+#if so, how many?
+sum(taxa_sums(physeq_sub) == 0) #33
+
+#in case there are taxa with zero reads, here's how to remove them:
+#save the original objevt, in case you need it later
+physeq_sub_original = physeq_sub
+physeq_sub = prune_taxa(taxa_sums(physeq_sub) > 0, physeq_sub)
+
+physeq_sub
+#transform to rel abund,
+physeq_abund_sub  = transform_sample_counts(physeq_sub, function(x) x / sum(x) )
+physeq_abund_sub
+#filter
+physeq_abund_prune_sub <- prune_taxa(taxa_sums(physeq_abund_sub) > 0.02, physeq_abund_sub)
+physeq_abund_prune_sub
+
+#re-calculate to 100%
+physeq_abund_prune_sub  = transform_sample_counts(physeq_abund_prune_sub, function(x) x / sum(x) )
+physeq_abund_prune_sub
+sample_data(physeq_abund_prune_sub)
+
+##Ordination####
+
+
+levels_sampling
+#my_symbols_sub =c(15,16,17,18)
+
+#NMDS not really working
+#physeq.NMDS.sub<- ordinate(physeq_abund_prune_sub, "NMDS", "bray")
+#pNMDS.sub <- plot_ordination(physeq_abund_prune_sub, physeq.NMDS.sub, type="sample", color="Treatment", shape="Sampling")
+#pNMDS.sub$physeq_abund_prune_sub$Sampling <- factor(pNMDS$physeq_abund_prune_sub$Sampling, levels = levels_sampling)
+#pNMDS.sub + scale_shape_manual(values=my_symbols_sub) 
+#pNMDS.sub
+
+physeq_abund_prune_sub
+#PCoA, bray-curtis full table (not genus level)####
+#calculate ordination
+physeq.PCoA.sub <- ordinate(physeq_abund_prune_sub, "PCoA", "bray")
+
+#make the plot
+PCoA.sub <- plot_ordination(physeq_abund_prune_sub, physeq.PCoA.sub, 
+                            type="sample", 
+                            color="Treatment", 
+                            shape="Sampling") 
+
+#order levels
+PCoA.sub$physeq_abund_prune_sub$Sampling <- factor(PCoA.sub$physeq_abund_prune_sub$Sampling, levels = levels_sampling)
+PCoA.sub$physeq_abund_prune_sub$Code <- factor(PCoA.sub$physeq_abund_prune_sub$Code, levels = levels_sampling)
+
+?scale_shape_manual()
+PCoA.sub + 
+#  scale_shape_manual(values=my_symbols_sub,) + 
+  geom_point(size=4) +
+  ggtitle("PCoA bray curtis") +
+  theme_bw() + 
+  ylab("PCo1 (11.6%)")+
+  xlab("PCo2 (14.5%)")+
+ # geom_line(aes(group = Code)) #+
+  scale_color_manual(values=c("#E41A1C", "#377EB8"))+ #same red and blue as the alpa diversity plot
+# stat_ellipse(level=0.95, type = "norm", aes(group=Sampling), color="black")  #confidence interval of ellipse is default 0.95
+  ggtitle("PCoA bray curtis") 
+
+ggsave("evonik_pcoa_bray_Tsub_line.png", dpi=600)
+ggsave("evonik_pcoa_bray_Tsub_line.pdf", dpi=600)
+
+#ggsave("evonik_pcoa_bray_Tsub_ellipse.png", dpi=600)
+#ggsave("evonik_pcoa_bray_Tsub_ellipse.pdf", dpi=600)
+physeq_sub
+
+####kruskal wallis on abundances####
+#make the abundance table, agglomerate on genus, remove taxa <0.02%
+#this was the old one, I hadn't used the one with subseted the 
+genus_table_sub_short <- physeq_sub %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x))
+
+genus_table_sub_short_new <- prune_taxa(taxa_sums(genus_table_sub_short) > 0.02, genus_table_sub_short) %>%
+  transform_sample_counts(function(x)100* x / sum(x)) 
+
+#(T0,)T1,T10(T5), T12(T6), agglomerated, no taxa <0.02%####
+genus_table_sub_short_new
+
+
+#make a plot, because, always
+#PCoA, bray-curtis T0,T1,T10,T12, genus level####
+head(sample_data(genus_table_sub_short_new))
+#do the analysis
+physeq.PCoA.sub <- ordinate(genus_table_sub_short_new, "PCoA", "bray")
+physeq.PCoA.sub
+genus_table_sub_short_new
+#plot
+PCoA.sub <- plot_ordination(genus_table_sub_short_new, physeq.PCoA.sub, type="sample", color="Treatment", shape="Sampling")
+
+PCoA.sub$genus_table_sub_short_new$Sampling <- factor(PCoA.sub$genus_table_sub_short_new$Sampling, levels = levels_sampling)
+PCoA.sub$genus_table_sub_short_new$Code <- factor(PCoA.sub$genus_table_sub_short_new$Code, levels = levels_sampling)
+
+my_symbols=c(17,15,16,1,2,3,18)
+my_symbols_sub =c(17,15,16,18)
+Pco
+#plot with phyloseq
+PCoA.sub + 
+  scale_shape_manual(values=my_symbols_sub) + 
+  geom_point() +
+    theme_bw() + 
+  ylab("Axis 2 (12.7%)") +
+  xlab("Axis 1 (20.6%)") +
+  #geom_line(aes(group = Code)) #+
+ scale_color_manual(values=c("#E41A1C", "#377EB8")) + #same red and blue as the alpa diversity plot
+ #stat_ellipse(level=0.95, type = "norm", aes(group=Treatment), color="black")  #confidence i  nterval of ellipse is default 0.95
+  ggtitle("PCoA bray curtis, genus level") 
+
+
+
+ggsave("pcoa_sub_genus.png", dpi=600, height = 7, width = 9)
+ggsave("pcoa_sub_genus.pdf", dpi=600, height = 7, width = 9)
+#plot with only ggplot, extract values
+
+pcoa_vectors_sub <- physeq.PCoA.sub$vectors %>% 
+  as.data.frame()%>% 
+  rownames_to_column(var="ID") %>%
+  select(ID,Axis.1:Axis.2)
+pcoa_vectors_sub
+pcoa_vectors_meta_sub <- left_join(pcoa_vectors_sub, meta_alpha, by=c("ID"="xBarcode")) 
+pcoa_vectors_meta_sub$Sampling<-factor(pcoa_vectors_meta$Sampling, levels = levels_sampling_new)
+
+levels_sampling_new
+pcoa_vectors_meta_sub$Sampling
+View(pcoa_vectors_meta_sub)
+
+ggplot(pcoa_vectors_meta_sub, aes(y=Axis.2, x=Axis.1, color=Treatment, shape=Sampling)) + 
+  scale_shape_manual(values=my_symbols_sub) + 
+  geom_point(size=4) +
+  theme_bw() + 
+   ylab("Axis 2 (12.7%)") +
+   xlab("Axis 1 (20.6%)") +
+  #geom_line(aes(group = Code)) #+
+  scale_color_manual(values=c("#E41A1C", "#377EB8")) + #same red and blue as the alpa diversity plot
+  #stat_ellipse(level=0.95, type = "norm", aes(group=Treatment), color="black")  #confidence interval of ellipse is default 0.95
+  ggtitle("PCoA bray curtis, genus level") 
+
+ggsave("evonik_pcoa_bray_sub_genus_newname.png", dpi=600, height = 7, width = 9)
+ggsave("evonik_pcoa_bray_sub_genus_newname.pdf", dpi=600, height = 7, width = 9)
+
+
+#make a dataframe from the phyloseq object
+phyloseq::otu_table(genus_table_sub_short_new) %>%
+  as.data.frame() %>%
+  rownames_to_column("id") %>%
+  left_join(phyloseq::tax_table(genus_table_sub_short_new)%>%as.data.frame()%>%
+                rownames_to_column("id")) ->phyloseq_biom
+
+View(phyloseq_biom)
+genus_table_sub_short_new
+#find possible duplicate genus names
+length(unique(phyloseq_biom$genus))
+length(unique(phyloseq_biom$genus)) == nrow(phyloseq_biom)
+duplicated(phyloseq_biom$genus)
+#duplicate names - change. 	
+#Lachnospiraceae Incertae Sedis to "Lachnospiraceae Incertae Sedis"
+#Ruminococcaceae Incertae Sedis to "Ruminococcaceae Incertae Sedis"
+#for sub T1,T10,T12
+# phyloseq_biom[35, "genus"] <- "Lachnospiraceae Incertae Sedis"
+# phyloseq_biom[138, "genus"] <- "Ruminococcaceae Incertae Sedis"
+
+#for T0-T12
+# phyloseq_biom[41, "genus"] <- "Lachnospiraceae Incertae Sedis"
+# phyloseq_biom[167, "genus"] <- "Ruminococcaceae Incertae Sedis"
+
+#for T0-T12
+phyloseq_biom[37, "genus"] <- "Lachnospiraceae Incertae Sedis"
+phyloseq_biom[143, "genus"] <- "Ruminococcaceae Incertae Sedis"
+
+
+phyloseq_biom_t <- phyloseq_biom %>%
+  dplyr::select(-c(id, kingdom:family, species)) %>%
+  column_to_rownames("genus") %>%
+  t()  %>%
+  as.data.frame()%>%
+  rownames_to_column("id") %>%
+  left_join(phyloseq::sample_data(physeq_sub)%>%as_tibble(rownames = "id")) ->phyloseq_biom_t_meta
+
+meta_alpha <- read.csv("../metadata_new.txt", header = TRUE, sep = "\t")
+View(meta_alpha)
+
+meta_beta <- sample_data(physeq_sub)%>%
+  as_tibble(rownames = "id") 
+
+#phyloseq_biom_t_meta_new <- left_join(phyloseq_biom_t, meta_alpha, by=c("id"="xBarcode"))
+View(meta_beta)
+View(phyloseq_biom_t_meta_new)
+View(phyloseq_biom_t)
+View(phyloseq_biom_t_meta)
+phyloseq_biom_t_meta
+write.csv(phyloseq_biom_t_meta, file = "phyloseq_biom_t_meta.T1.T10.T12.csv")
+write.csv(phyloseq_biom_t_meta, file = "phyloseq_biom_t_meta.T1.T10.T12.csv")
+
+#for lefse####
+phyloseq_biom_meta_lefse <- phyloseq_biom_t_meta %>% 
+  column_to_rownames(var="id") %>%
+  select(-c(Code:Day,CODE:place))%>%
+  t() 
+ 
+
+View(phyloseq_biom_meta_lefse)
+write.csv(phyloseq_biom_meta_lefse, file = "evonik.T0.T1.T10.T12_lefse.csv")
+
+
+#write.csv(phyloseq_biom, file = "phyloseq_biom.csv")
+
+#check if the taxa of interest are present as column
+colnames(phyloseq_biom_t_meta)[grepl("Lacti",colnames(phyloseq_biom_t_meta))] #both "Lacticaseibacillus" and "Lactiplantibacillus" are present
+colnames(phyloseq_biom_t_meta)[grepl("Bacillus",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Limosilactobacillus",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Bifidobacterium",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Cloacibacillus",colnames(phyloseq_biom_t_meta))] #present
+
+
+phyloseq_biom_t_meta
+# Taxonomic group
+# Proteobacteria
+# Neisseria, if available 
+# Escherichia
+# Salmonella, if available
+# Bacteroides
+# Pseudomonas, if available 
+# Bifidobacterium
+# Lactobacillaceae
+# Faecalibacterium prausnitzii
+View(phyloseq_biom_t_meta)
+colnames(phyloseq_biom_t_meta)[grepl("Proteobacteria",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Neisseria",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Escherichia",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Salmonella",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Bacteroides",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Pseudomonas",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Bifidobacterium",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Lactobacillaceae",colnames(phyloseq_biom_t_meta))] #present
+colnames(phyloseq_biom_t_meta)[grepl("Faecalibacterium",colnames(phyloseq_biom_t_meta))] #present
+
+
+#summary
+library(dplyr)
+
+#Lacticaseibacillus
+group_by(phyloseq_biom_t_meta, Treatment) %>%
+  summarise(
+    count = n(),
+    mean = mean(Lacticaseibacillus, na.rm = TRUE),
+    sd = sd(Lacticaseibacillus, na.rm = TRUE),
+    median = median(Lacticaseibacillus, na.rm = TRUE),
+    IQR = IQR(Lacticaseibacillus, na.rm = TRUE)
+  )
+
+# # A tibble: 2 × 6
+# Treatment count    mean      sd median     IQR
+# <chr>     <int>   <dbl>   <dbl>  <dbl>   <dbl>
+#   1 Placebo      30 0.00242 0.00588      0 0      
+# 2 Probiotic    61 0.00408 0.0114       0 0.00273
+
+kruskal.test(Lacticaseibacillus ~ Treatment, data = phyloseq_biom_t_meta)
+
+
+# Kruskal-Wallis rank sum test
+# 
+# data:  Lacticaseibacillus by Treatment
+# Kruskal-Wallis chi-squared = 1.518, df = 1, p-value = 0.2179
+
+wilcox.test(Lacticaseibacillus ~ Treatment, data = phyloseq_biom_t_meta)
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Lacticaseibacillus by Treatment
+# W = 793, p-value = 0.2198
+#alternative hypothesis: true location shift is not equal to 0
+
+#Lactiplantibacillus
+group_by(phyloseq_biom_t_meta, Treatment) %>%
+  summarise(
+    count = n(),
+    mean = mean(Lactiplantibacillus, na.rm = TRUE),
+    sd = sd(Lactiplantibacillus, na.rm = TRUE),
+    median = median(Lactiplantibacillus, na.rm = TRUE),
+    IQR = IQR(Lactiplantibacillus, na.rm = TRUE)
+  )
+
+# # A tibble: 2 × 6
+# Treatment count    mean     sd   median     IQR
+# <chr>     <int>   <dbl>  <dbl>    <dbl>   <dbl>
+#   1 Placebo      30 0       0      0        0      
+# 2 Probiotic    61 0.00893 0.0230 0.000649 0.00585
+kruskal.test(Lactiplantibacillus ~ Treatment, data = phyloseq_biom_t_meta)
+wilcox.test(Lactiplantibacillus ~ Treatment, data = phyloseq_biom_t_meta)
+
+# Kruskal-Wallis rank sum test
+# 
+# data:  Lactiplantibacillus by Treatment
+# Kruskal-Wallis chi-squared = 21.603, df = 1, p-value = 3.354e-06
+
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Lactiplantibacillus by Treatment
+# W = 450, p-value = 3.436e-06
+# alternative hypothesis: true location shift is not equal to 0
+
+#Bacillus
+group_by(phyloseq_biom_t_meta, Treatment) %>%
+  summarise(
+    count = n(),
+    mean = mean(Bacillus, na.rm = TRUE),
+    sd = sd(Bacillus, na.rm = TRUE),
+    median = median(Bacillus, na.rm = TRUE),
+    IQR = IQR(Bacillus, na.rm = TRUE)
+  )
+
+
+# # A tibble: 2 × 6
+# Treatment count    mean      sd   median     IQR
+# <chr>     <int>   <dbl>   <dbl>    <dbl>   <dbl>
+#   1 Placebo      30 0.00467 0.0166  0        0.00267
+# 2 Probiotic    61 0.00332 0.00727 0.000710 0.00353
+
+kruskal.test(Bacillus ~ Treatment, data = phyloseq_biom_t_meta)
+wilcox.test(Bacillus ~ Treatment, data = phyloseq_biom_t_meta)
+
+# Kruskal-Wallis rank sum test
+# 
+# data:  Bacillus by Treatment
+# Kruskal-Wallis chi-squared = 1.1481, df = 1, p-value = 0.2839
+
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Bacillus by Treatment
+# W = 796, p-value = 0.286
+# alternative hypothesis: true location shift is not equal to 0
+
+#Limosilactobacillus
+group_by(phyloseq_biom_t_meta, Treatment) %>%
+  summarise(
+    count = n(),
+    mean = mean(Limosilactobacillus, na.rm = TRUE),
+    sd = sd(Limosilactobacillus, na.rm = TRUE),
+    median = median(Limosilactobacillus, na.rm = TRUE),
+    IQR = IQR(Limosilactobacillus, na.rm = TRUE)
+  )
+# # A tibble: 2 × 6
+# Treatment count     mean       sd median     IQR
+# <chr>     <int>    <dbl>    <dbl>  <dbl>   <dbl>
+#   1 Placebo      30 0.000161 0.000362      0 0      
+# 2 Probiotic    61 0.00203  0.00416       0 0.00196
+
+kruskal.test(Limosilactobacillus ~ Treatment, data = phyloseq_biom_t_meta)
+wilcox.test(Limosilactobacillus ~ Treatment, data = phyloseq_biom_t_meta)
+
+# Kruskal-Wallis rank sum test
+# 
+# data:  Limosilactobacillus by Treatment
+# Kruskal-Wallis chi-squared = 6.3878, df = 1, p-value = 0.01149
+
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Limosilactobacillus by Treatment
+# W = 655, p-value = 0.01165
+# alternative hypothesis: true location shift is not equal to 0
+
+#Bifidobacterium
+
+group_by(phyloseq_biom_t_meta, Treatment) %>%
+  summarise(
+    count = n(),
+    mean = mean(Bifidobacterium, na.rm = TRUE),
+    sd = sd(Bifidobacterium, na.rm = TRUE),
+    median = median(Bifidobacterium, na.rm = TRUE),
+    IQR = IQR(Bifidobacterium, na.rm = TRUE)
+  )
+# # A tibble: 2 × 6
+# Treatment count  mean    sd median   IQR
+# <chr>     <int> <dbl> <dbl>  <dbl> <dbl>
+# 1 Placebo      30  4.82  6.96   2.26  5.36
+# 2 Probiotic    61  3.77  3.47   2.76  5.51
+
+kruskal.test(Bifidobacterium ~ Treatment, data = phyloseq_biom_t_meta)
+# Kruskal-Wallis rank sum test
+# 
+# data:  Bifidobacterium by Treatment
+# Kruskal-Wallis chi-squared = 0.14433, df = 1, p-value = 0.704
+
+wilcox.test(Bifidobacterium ~ Treatment, data = phyloseq_biom_t_meta)
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Bifidobacterium by Treatment
+# W = 870, p-value = 0.7071
+# alternative hypothesis: true location shift is not equal to 0
+
+library(tidyr)
+
+# Analyse specific taxa
+tax <- "Limosilactobacillus"
+
+# Pick the signal (abundance) for this tax
+sample_data(physeq_sub)$Treatment <- get_sample(physeq_sub, tax)
+
+
+attach(meta(pseq))
+res<- pairwise.wilcox.test(signal, group, p.adjust.method = 'BH')
+
+# Show the results
+print(res)
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("lefser")
+
+library("lefser")
+
+lefser(
+  phyloseq_biom_t_meta,
+  kruskal.threshold = 0.05,
+  wilcox.threshold = 0.05,
+  lda.threshold = 2,
+  groupCol = "Treatment",
+  blockCol = NULL,
+  assay = 1L,
+  trim.names = FALSE
+)
+?lefser()
+
+
+View(phyloseq_biom_t_meta)
+#### find if genera/species with higher/lower abundance between placebo and probiotic ####
+#http://joey711.github.io/phyloseq-extensions/DESeq2.html
+library("DESeq2")
+diagdds = phyloseq_to_deseq2(physeq, ~ Treatment)
+diagdds = DESeq(diagdds, test="Wald", fitType="mean")
+
+res = results(diagdds, cooksCutoff = FALSE)
+alpha = 0.01
+sigtab = res[which(res$padj < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(physeq)[rownames(sigtab), ], "matrix"))
+head(sigtab)
+dim(sigtab)
+
+library("ggplot2")
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+  scale_fill_brewer(palette = palname, ...)
+}
+# Phylum order
+x = tapply(sigtab$log2FoldChange, sigtab$phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$phylum = factor(as.character(sigtab$phylum), levels=names(x))
+# Genus order
+x = tapply(sigtab$log2FoldChange, sigtab$genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$genus = factor(as.character(sigtab$genus), levels=names(x))
+ggplot(sigtab, aes(x=genus, y=log2FoldChange, color=phylum)) + geom_point(size=4) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+sample_data(physeq)
+diagdds_treatment_sampling = phyloseq_to_deseq2(physeq, design = ~ Treatment+Sampling)
+diagdds_treatment_sampling = DESeq(diagdds_treatment_sampling, test="Wald", fitType="mean")
+
+res_ts = results(diagdds_treatment_sampling, cooksCutoff = FALSE)
+alpha = 0.01
+sigtab_ts = res[which(res_ts$padj < alpha), ]
+sigtab_ts = cbind(as(sigtab_ts, "data.frame"), as(tax_table(physeq)[rownames(sigtab_ts), ], "matrix"))
+head(sigtab_ts)
+dim(sigtab_ts)
+
+# Phylum order
+x = tapply(sigtab_ts$log2FoldChange, sigtab_ts$phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtab_ts$phylum = factor(as.character(sigtab_ts$phylum), levels=names(x))
+# Genus order
+x = tapply(sigtab_ts$log2FoldChange, sigtab_ts$genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab_ts$genus = factor(as.character(sigtab_ts$genus), levels=names(x))
+# species order
+x = tapply(sigtab_ts$log2FoldChange, sigtab_ts$species, function(x) max(x))
+x = sort(x, TRUE)
+sigtab_ts$species = factor(as.character(sigtab_ts$species), levels=names(x))
+ggplot(sigtab_ts, aes(x=genus, y=log2FoldChange, color=species)) + geom_point(size=4) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+#subset lactoplantibacillus####
+#are lactobacilli and bacilli 
+
+# •Lactiplantibacillus plantarum subsp. plantarum DSM33363
+# •L.plantarum subsp. plantarum DSM33364
+# •Lacticaseibacillus paracasei subsp. paracasei DSM33373
+# •Limosilactobacillus reuteri DSM33374
+# •Bacillus megaterium DSM33300
+# •Bacillus pumilus DSM33335
+# •B.pumilus DSM33297
+
+physeq_abund_prune
+
+lact <- subset_taxa(physeq, genus=="Lactiplantibacillus")
+lact = prune_taxa(taxa_sums(lact) > 0, lact)
+lactcas <- subset_taxa(physeq, genus=="Lacticaseibacillus")
+lactcas = prune_taxa(taxa_sums(lactcas) > 0, lactcas)
+lim <- subset_taxa(physeq, genus=="Limosilactobacillus")
+lim = prune_taxa(taxa_sums(lim) > 0, lim)
+bacillus <- subset_taxa(physeq, genus=="Bacillus")
+bacillus = prune_taxa(taxa_sums(bacillus) > 0, bacillus)
+Bifidobacterium <- subset_taxa(physeq, genus=="Bifidobacterium")
+Bifidobacterium = prune_taxa(taxa_sums(Bifidobacterium) > 0, Bifidobacterium)
+
+# #with filtered - not present any more
+# lact <- subset_taxa(physeq_abund_prune, genus=="Lactiplantibacillus")
+# lact = prune_taxa(taxa_sums(lact) > 0, lact)
+# lactcas <- subset_taxa(physeq_abund_prune, genus=="Lacticaseibacillus")
+# lactcas = prune_taxa(taxa_sums(lactcas) > 0, lactcas)
+# lim <- subset_taxa(physeq_abund_prune, genus=="Limosilactobacillus")
+# lim = prune_taxa(taxa_sums(lim) > 0, lim)
+# bacillus <- subset_taxa(physeq_abund_prune, genus=="Bacillus")
+# bacillus = prune_taxa(taxa_sums(bacillus) > 0, bacillus)
+
+# "Terrisporobacter"
+# Terrisporobacter <- subset_taxa(physeq, genus=="Terrisporobacter")
+# Terrisporobacter = prune_taxa(taxa_sums(Terrisporobacter) > 0, Terrisporobacter)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(Terrisporobacter, na.rm = TRUE),
+#     sd = sd(Terrisporobacter, na.rm = TRUE),
+#     median = median(Terrisporobacter, na.rm = TRUE),
+#     IQR = IQR(Terrisporobacter, na.rm = TRUE)
+#   )
+# wilcox.test(Terrisporobacter ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# "TM7a"
+# TM7a <- subset_taxa(physeq, genus=="TM7a")
+# TM7a = prune_taxa(taxa_sums(TM7a) > 0, TM7a)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(TM7a, na.rm = TRUE),
+#     sd = sd(TM7a, na.rm = TRUE),
+#     median = median(TM7a, na.rm = TRUE),
+#     IQR = IQR(TM7a, na.rm = TRUE)
+#   )
+# wilcox.test(TM7a ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# "Lachnoclostridium"
+# Lachnoclostridium <- subset_taxa(physeq, genus=="Lachnoclostridium")
+# Lachnoclostridium = prune_taxa(taxa_sums(Lachnoclostridium) > 0, Lachnoclostridium)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(Lachnoclostridium, na.rm = TRUE),
+#     sd = sd(Lachnoclostridium, na.rm = TRUE),
+#     median = median(Lachnoclostridium, na.rm = TRUE),
+#     IQR = IQR(Lachnoclostridium, na.rm = TRUE)
+#   )
+# wilcox.test(Lachnoclostridium ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# "Methanosphaera"
+# Methanosphaera <- subset_taxa(physeq, genus=="Methanosphaera")
+# Methanosphaera = prune_taxa(taxa_sums(Methanosphaera) > 0, Methanosphaera)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(Methanosphaera, na.rm = TRUE),
+#     sd = sd(Methanosphaera, na.rm = TRUE),
+#     median = median(Methanosphaera, na.rm = TRUE),
+#     IQR = IQR(Methanosphaera, na.rm = TRUE)
+#   )
+# wilcox.test(Methanosphaera ~ Treatment, data = phyloseq_biom_t_meta)
+#SIGNIFICANT
+# Treatment count      mean       sd median   IQR
+# <chr>     <int>     <dbl>    <dbl>  <dbl> <dbl>
+#   1 Placebo      30 0.0000194 0.000106      0     0
+# 2 Probiotic    61 0.00406   0.0166        0     0
+# > wilcox.test(Methanosphaera ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Methanosphaera by Treatment
+# W = 775, p-value = 0.04519
+# alternative hypothesis: true location shift is not equal to 0
+
+# "Cloacibacillus"
+# Cloacibacillus <- subset_taxa(physeq, genus=="Cloacibacillus")
+# Cloacibacillus = prune_taxa(taxa_sums(Cloacibacillus) > 0, Cloacibacillus)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(Cloacibacillus, na.rm = TRUE),
+#     sd = sd(Cloacibacillus, na.rm = TRUE),
+#     median = median(Cloacibacillus, na.rm = TRUE),
+#     IQR = IQR(Cloacibacillus, na.rm = TRUE)
+#   )
+# wilcox.test(Cloacibacillus ~ Treatment, data = phyloseq_biom_t_meta)
+#SIGNIFICANT, only present in probiotic
+# Treatment count     mean      sd median   IQR
+# <chr>     <int>    <dbl>   <dbl>  <dbl> <dbl>
+#   1 Placebo      30 0        0            0     0
+# 2 Probiotic    61 0.000513 0.00165      0     0
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Cloacibacillus by Treatment
+# W = 705, p-value = 0.004847
+# alternative hypothesis: true location shift is not equal to 0
+# "DMER64"
+# DMER64 <- subset_taxa(physeq, genus=="DMER64")
+# DMER64 = prune_taxa(taxa_sums(DMER64) > 0, DMER64)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(DMER64, na.rm = TRUE),
+#     sd = sd(DMER64, na.rm = TRUE),
+#     median = median(DMER64, na.rm = TRUE),
+#     IQR = IQR(DMER64, na.rm = TRUE)
+#   )
+# wilcox.test(DMER64 ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# "unspecific_Gracilibacteraceae"
+# unspecific_Gracilibacteraceae <- subset_taxa(physeq, genus=="unspecific_Gracilibacteraceae")
+# unspecific_Gracilibacteraceae = prune_taxa(taxa_sums(unspecific_Gracilibacteraceae) > 0, unspecific_Gracilibacteraceae)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(unspecific_Gracilibacteraceae, na.rm = TRUE),
+#     sd = sd(unspecific_Gracilibacteraceae, na.rm = TRUE),
+#     median = median(unspecific_Gracilibacteraceae, na.rm = TRUE),
+#     IQR = IQR(unspecific_Gracilibacteraceae, na.rm = TRUE)
+#   )
+# wilcox.test(unspecific_Gracilibacteraceae ~ Treatment, data = phyloseq_biom_t_meta)
+# A tibble: 2 × 6
+# Treatment count    mean      sd  median     IQR
+# <chr>     <int>   <dbl>   <dbl>   <dbl>   <dbl>
+#   1 Placebo      30 0.00485 0.00512 0.00310 0.00456
+# 2 Probiotic    61 0.0108  0.0113  0.00778 0.00961
+# > wilcox.test(unspecific_Gracilibacteraceae ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  unspecific_Gracilibacteraceae by Treatment
+# W = 589, p-value = 0.005971
+# alternative hypothesis: true location shift is not equal to 0
+
+# "Blautia"
+# Blautia <- subset_taxa(physeq, genus=="Blautia")
+# Blautia = prune_taxa(taxa_sums(Blautia) > 0, Blautia)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(Blautia, na.rm = TRUE),
+#     sd = sd(Blautia, na.rm = TRUE),
+#     median = median(Blautia, na.rm = TRUE),
+#     IQR = IQR(Blautia, na.rm = TRUE)
+#   )
+# wilcox.test(Blautia ~ Treatment, data = phyloseq_biom_t_meta)
+# Treatment count  mean    sd median   IQR
+# <chr>     <int> <dbl> <dbl>  <dbl> <dbl>
+#   1 Placebo      30  14.8  8.11   11.9  6.78
+# 2 Probiotic    61  11.1  6.19   10.2  7.65
+# > wilcox.test(Blautia ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Blautia by Treatment
+# W = 1189, p-value = 0.02094
+# alternative hypothesis: true location shift is not equal to 0
+
+
+
+# "HT002"
+# HT002 <- subset_taxa(physeq, genus=="HT002")
+# HT002 = prune_taxa(taxa_sums(HT002) > 0, HT002)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(HT002, na.rm = TRUE),
+#     sd = sd(HT002, na.rm = TRUE),
+#     median = median(HT002, na.rm = TRUE),
+#     IQR = IQR(HT002, na.rm = TRUE)
+#   )
+# wilcox.test(HT002 ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# "unspecific_Dermatophilaceae"
+# unspecific_Dermatophilaceae <- subset_taxa(physeq, genus=="unspecific_Dermatophilaceae")
+# unspecific_Dermatophilaceae = prune_taxa(taxa_sums(unspecific_Dermatophilaceae) > 0, unspecific_Dermatophilaceae)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(unspecific_Dermatophilaceae, na.rm = TRUE),
+#     sd = sd(unspecific_Dermatophilaceae, na.rm = TRUE),
+#     median = median(unspecific_Dermatophilaceae, na.rm = TRUE),
+#     IQR = IQR(unspecific_Dermatophilaceae, na.rm = TRUE)
+#   )
+# wilcox.test(unspecific_Dermatophilaceae ~ Treatment, data = phyloseq_biom_t_meta)
+# "unspecific_Peptostreptococcaceae"
+# unspecific_Peptostreptococcaceae <- subset_taxa(physeq, genus=="unspecific_Peptostreptococcaceae")
+# unspecific_Peptostreptococcaceae = prune_taxa(taxa_sums(unspecific_Peptostreptococcaceae) > 0, unspecific_Peptostreptococcaceae)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(unspecific_Peptostreptococcaceae, na.rm = TRUE),
+#     sd = sd(unspecific_Peptostreptococcaceae, na.rm = TRUE),
+#     median = median(unspecific_Peptostreptococcaceae, na.rm = TRUE),
+#     IQR = IQR(unspecific_Peptostreptococcaceae, na.rm = TRUE)
+#   )
+# wilcox.test(unspecific_Peptostreptococcaceae ~ Treatment, data = phyloseq_biom_t_meta)
+# "unspecific_Christensenellaceae"
+# unspecific_Christensenellaceae <- subset_taxa(physeq, genus=="unspecific_Christensenellaceae")
+# unspecific_Christensenellaceae = prune_taxa(taxa_sums(unspecific_Christensenellaceae) > 0, unspecific_Christensenellaceae)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(unspecific_Christensenellaceae, na.rm = TRUE),
+#     sd = sd(unspecific_Christensenellaceae, na.rm = TRUE),
+#     median = median(unspecific_Christensenellaceae, na.rm = TRUE),
+#     IQR = IQR(unspecific_Christensenellaceae, na.rm = TRUE)
+#   )
+# wilcox.test(unspecific_Christensenellaceae ~ Treatment, data = phyloseq_biom_t_meta)
+# "Coprococcus"
+# Coprococcus <- subset_taxa(physeq, genus=="Coprococcus")
+# Coprococcus = prune_taxa(taxa_sums(Coprococcus) > 0, Coprococcus)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(Coprococcus, na.rm = TRUE),
+#     sd = sd(Coprococcus, na.rm = TRUE),
+#     median = median(Coprococcus, na.rm = TRUE),
+#     IQR = IQR(Coprococcus, na.rm = TRUE)
+#   )
+# wilcox.test(Coprococcus ~ Treatment, data = phyloseq_biom_t_meta)
+# A tibble: 2 × 6
+# Treatment count  mean    sd median   IQR
+# <chr>     <int> <dbl> <dbl>  <dbl> <dbl>
+#   1 Placebo      30 0.539 0.522  0.453 0.655
+# 2 Probiotic    61 1.64  1.95   1.02  1.24 
+# > wilcox.test(Coprococcus ~ Treatment, data = phyloseq_biom_t_meta)
+# 
+# Wilcoxon rank sum test with continuity correction
+# 
+# data:  Coprococcus by Treatment
+# W = 458, p-value = 0.0001162
+# alternative hypothesis: true location shift is not equal to 0
+
+
+# "unspecific_Terasakiellaceae"
+# unspecific_Terasakiellaceae <- subset_taxa(physeq, genus=="unspecific_Terasakiellaceae")
+# unspecific_Terasakiellaceae = prune_taxa(taxa_sums(unspecific_Terasakiellaceae) > 0, unspecific_Terasakiellaceae)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(unspecific_Terasakiellaceae, na.rm = TRUE),
+#     sd = sd(unspecific_Terasakiellaceae, na.rm = TRUE),
+#     median = median(unspecific_Terasakiellaceae, na.rm = TRUE),
+#     IQR = IQR(unspecific_Terasakiellaceae, na.rm = TRUE)
+#   )
+# wilcox.test(unspecific_Terasakiellaceae ~ Treatment, data = phyloseq_biom_t_meta)
+# "Subdoligranulum"
+# Subdoligranulum <- subset_taxa(physeq, genus=="Subdoligranulum")
+# Subdoligranulum = prune_taxa(taxa_sums(Subdoligranulum) > 0, Subdoligranulum)
+# group_by(phyloseq_biom_t_meta, Treatment) %>%
+#   summarise(
+#     count = n(),
+#     mean = mean(Subdoligranulum, na.rm = TRUE),
+#     sd = sd(Subdoligranulum, na.rm = TRUE),
+#     median = median(Subdoligranulum, na.rm = TRUE),
+#     IQR = IQR(Subdoligranulum, na.rm = TRUE)
+#   )
+# wilcox.test(Subdoligranulum ~ Treatment, data = phyloseq_biom_t_meta)
+
+
+
+#acclomerate data 
+lact_genus <- lact %>%
+  tax_glom("species") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+
+#?psmelt()
+#check which variables exist in the "sampling" column
+#unique(lact_genus[,'Sampling'])
+#acclomerate data
+lactcas_genus <- lactcas %>%
+  tax_glom("species") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+#acclomerate data lim
+lim_genus <- lim %>%
+  tax_glom("species") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+#acclomerate data bacillus
+bacillus_genus <- bacillus %>%
+  tax_glom("species") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+bacillus_genus_wide <- bacillus_genus %>%
+  select(-c(kingdom:family,OTU)) %>%
+  pivot_wider(values_from = Abundance, names_from = species)
+
+
+bacillus_genus_wide
+write.csv(lact_genus, "abundance.Lactiplantibacillus.long.csv")
+write.csv(lactcas_genus, "abundance.Lacticaseibacillus.long.csv")
+write.csv(lim_genus, "abundance.Limosilactobacillus.long.csv")
+write.csv(bacillus_genus, "abundance.Bacillus.long.csv")
+write.csv(bacillus_genus_wide, "abundance.Bacillus.wide.csv")
+#make barplots
+
+levels_treatment <- c("Probiotic", "Placebo")
+lact_genus$Sampling <- factor(lact_genus$Sampling, levels = levels_sampling_new)
+lact_genus$Treatment <- factor(lact_genus$Treatment, levels = levels_treatment)
+p_lact <- ggplot(lact_genus, aes(x=Sampling, y=Abundance, fill=species)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment, scale="free") +
+  theme(axis.title.x = element_blank()) +
+  labs(fill="Lactiplantibacillus")+
+  theme(text = element_text(size = 25)) +
+#  theme(legend.position="bottom") +
+  guides(fill=guide_legend(ncol =1))
+p_lact
+summarise(lact_genus)
+colnames(lact_genus)
+View(lact_genus)
+lact_genus %>%
+  group_by(Treatment, Sampling, genus) %>%
+  summarise(Abundance = mean(Abundance))
+
+lact_genus_sum <- lact_genus %>%
+  pivot_wider(values_from = Abundance, names_from = species) 
+View(lact_genus_sum)
+lact_genus_sum %>% 
+  group_by(Treatment) %>% 
+  summarise(plantarum = mean(plantarum))
+
+aggregate(OutcomeVariable ~., df1, FUN = mean)
+pg <- ggplot_build(p_lact)
+pg$data
+ggsave("Lactiplantibacillus_abundance.pdf", dpi=600)
+ggsave("Lactiplantibacillus_abundance.png", dpi=600)
+
+lactcas_genus$Sampling <- factor(lactcas_genus$Sampling, levels = levels_sampling_new)
+lactcas_genus$Treatment <- factor(lactcas_genus$Treatment, levels = levels_treatment)
+
+p_lactcas <- ggplot(lactcas_genus, aes(x=Sampling, y=Abundance, fill=species)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment, scale="free") +
+  theme(axis.title.x = element_blank()) +
+  labs(fill="Lacticaseibacillus")+
+  theme(text = element_text(size = 25)) +
+ # theme(legend.position="bottom") +
+  guides(fill=guide_legend(ncol =1))
+
+ggsave("Lacticaseibacillus_abundance.pdf", dpi=600)
+ggsave("Lacticaseibacillus_abundance.png", dpi=600)
+
+lim_genus$Sampling <- factor(lim_genus$Sampling, levels = levels_sampling_new)
+lim_genus$Treatment <- factor(lim_genus$Treatment, levels = levels_treatment)
+
+p_lim <- ggplot(lim_genus, aes(x=Sampling, y=Abundance, fill=species)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment, scale="free") +
+  theme(axis.title.x = element_blank()) +
+  labs(fill="Limosilactobacillus")+
+  theme(text = element_text(size = 25)) +
+#  theme(legend.position="bottom") +
+  guides(fill=guide_legend(ncol =1))
+
+ggsave("Limosilactobacillus _abundance.pdf", dpi=600)
+ggsave("Limosilactobacillus _abundance.png", dpi=600)
+
+bacillus_genus$Sampling <- factor(bacillus_genus$Sampling, levels = levels_sampling_new)
+bacillus_genus$Treatment <- factor(bacillus_genus$Treatment, levels = levels_treatment)
+
+ggplot(bacillus_genus, aes(x=Sampling, y=Abundance, fill=species)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment, scale="free") +
+  theme(axis.title.x = element_blank()) +
+  labs(fill="Bacillus")+
+  theme(text = element_text(size = 25)) +
+  theme(legend.position="bottom") +
+  guides(fill=guide_legend(ncol =4))
+
+ggsave("Bacillus_abundance.pdf", dpi=600)
+ggsave("Bacillus_abundance.png", dpi=600)
+
+bacillus_genus$Sampling <- factor(bacillus_genus$Sampling, levels = levels_sampling_new)
+p_bac <- ggplot(bacillus_genus, aes(x=Sampling, y=Abundance, fill=species)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment, scale="free") +
+  theme(axis.title.x = element_blank()) +
+ # ggtitle("Bacillus") +
+  labs(fill="Bacillus")+
+  theme(text = element_text(size = 25)) +
+#  theme(legend.position="bottom") +
+ # theme(legend.position="none")
+  guides(fill=guide_legend(ncol =1))
+p_bac 
+ggsave("Bacillus_abundance.pdf", dpi=600)
+ggsave("Bacillus_abundance.png", dpi=600)
+
+library(cowplot)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+p_lact 
+p_bac 
+p_lactcas
+p_lim
+plot_grid(p_bac,p_lact, p_lactcas, p_lim)
+
+ggsave("plot_taxaofinterest.all.order.png", dpi=600, height=20, width=20)
+ggsave("plot_taxaofinterest.all.order.pdf", dpi=600, height=20, width=20)
+
+ggsave
+?ggarrange()
+ggarrange(p_bac,p_lact, p_lactcas, p_lim, 
+          labels = c("A)","B)","C)","D)"), 
+          font.label = list(size = 30))
+
+ggsave("plot_taxaofinterest.all.size_newname.order.png", dpi=600, height=20, width=22)
+ggsave("plot_taxaofinterest.all.size_newname.order.pdf", dpi=600, height=20, width=22)
+grid.arrange(p_bac,p_lact, p_lactcas, p_lim)
+
+windowsFonts()
+facet_grid(p_lact, p_lactcas, p_lim, p_bac)
+
+
+
+
+
+
+#plot species per individual ####
+lact_genus$Sampling <- factor(lact_genus$Sampling, levels = levels_sampling)
+lact_ind<-ggplot(lact_genus, aes(x=Sampling, y=Abundance, fill=species, group=Code)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment+Code, scale="free") +
+  theme(axis.title.x = element_blank()) +
+  labs(fill="Lactiplantibacillus")+
+ # theme(text = element_text(size = 25)) +
+  #  theme(legend.position="bottom") +
+  guides(fill=guide_legend(ncol =1))
+
+lactcas_genus$Sampling <- factor(lactcas_genus$Sampling, levels = levels_sampling)
+lactcas_ind<-ggplot(lactcas_genus, aes(x=Sampling, y=Abundance, fill=species, group=Code)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment+Code, scale="free") +
+  theme(axis.title.x = element_blank()) +
+  labs(fill="Lacticaseibacillus")+
+ # theme(text = element_text(size = 25)) +
+  # theme(legend.position="bottom") +
+  guides(fill=guide_legend(ncol =1))
+
+
+lim_genus$Sampling <- factor(lim_genus$Sampling, levels = levels_sampling)
+lim_ind<-ggplot(lim_genus, aes(x=Sampling, y=Abundance, fill=species, group=Code)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment+Code, scale="free") +
+  theme(axis.title.x = element_blank()) +
+  labs(fill="Limosilactobacillus")+
+#  theme(text = element_text(size = 25)) +
+  #  theme(legend.position="bottom") +
+  guides(fill=guide_legend(ncol =1))
+
+bacillus_genus$Sampling <- factor(bacillus_genus$Sampling, levels = levels_sampling)
+bac_ind<- ggplot(bacillus_genus, aes(x=Sampling, y=Abundance, fill=species, group=Code)) +
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Treatment+Code, scale="free") +
+  theme(axis.title.x = element_blank()) +
+  labs(fill="Bacillus")+
+ # theme(text = element_text(size = 25)) +
+ # theme(legend.position="bottom") +
+  guides(fill=guide_legend(ncol =1))
+
+
+ggarrange(bac_ind,lact_ind, lactcas_ind, lim_ind, nrow=4,
+          labels = c("A)","B)","C)","D)"), 
+          font.label = list(size = 30))
+
+ggsave("probiotic.taxa.individuals.png", dpi=300, height=30, width=20)
+ggsave("probiotic.taxa.individuals.pdf", dpi=300, height=30, width=20)
+#############
+lact
+lact_original = lact
+lact = prune_taxa(taxa_sums(lact) > 0, lact)
+plot_heatmap(lact)
+
+
+
+
+
+#acclomerate data
+lact_genus <- lact %>%
+  tax_glom("species") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+ggplot(lact_genus, aes(x=Sample, color = species)) +
+  geom_bar()
+
+lact_genus
+View(lact_genus)
+
+plot_bar(lact_genus)
+plot_bar(lact, x="Sampling", fill="species", facet_grid=~Treatment)
+lact
+bacillus
+
+
+
+
+
+
+
+#calculate the highest abundant taxa ####
+#https://stackoverflow.com/questions/72569157/r-calculate-most-abundant-taxa-using-phyloseq-object
+genus <- physeq %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+genus
+
+# highest abundance: all samples pooled together
+genus %>%
+  group_by(genus) %>%
+  summarise(Abundance = mean(Abundance)) %>%
+  arrange(-Abundance)
+
+# # A tibble: 1,391 × 2
+# genus                      Abundance
+# <chr>                          <dbl>
+#   1 Blautia                        12.3 
+# 2 Faecalibacterium                8.54
+# 3 unspecific_Lachnospiraceae      6.40
+# 4 Agathobacter                    4.29
+# 5 Bifidobacterium                 4.22
+# 6 Roseburia                       3.89
+# 7 Bacteroides                     3.44
+# 8 Subdoligranulum                 3.21
+# 9 Fusicatenibacter                2.94
+# 10 Ruminococcus                    2.55
+
+
+
+
+
+
+
+
+#preprocessing tutorial####
+#http://joey711.github.io/phyloseq/preprocess.html
+#http://joey711.github.io/phyloseq-demo/Restroom-Biogeography
+
+#plot top 20 taxa - wihtout filter ####
+#will plot all taxa, but only fill with color the top 20. takes a lot of time to render!
+
+#sample_variables(physeq3)
+#top20otus = names(sort(taxa_sums(physeq1), TRUE)[1:20])
+#taxtab20 = cbind(tax_table(physeq1), genus_20 = NA)
+#taxtab20[top20otus, "genus_20"] <- as(tax_table(physeq1)[top20otus, "genus"],
+#                                      "character")
+#tax_table(physeq1) <- tax_table(taxtab20)
+
+#physeq1
+#physeq1 <- transform_sample_counts(physeq1, function(x) 100 * x/sum(x))
+
+#title = "Relative Abundance"
+#genus_plot2 <- plot_bar(glom_, "Barcode", fill = "genus_20", title = title)
+
+
+#(genus_plot2)
+
+
+
+
+#to rel. abundance####
+#transform to relative abundance filtered such that only OTUs with a mean greater than 10^-5 are kept.
+physeq3_abund  = transform_sample_counts(physeq3, function(x) x / sum(x) )
+#filter so that only OTUs with a mean greater than 10^-5 are kept.
+physeq3_abund_filt = filter_taxa(physeq3_abund, function(x) mean(x) > 1e-5, TRUE)
+
+#filter again to retransform to 100% again!
+physeq3_abund_filt_re = transform_sample_counts(physeq3_abund_filt, function(x) x / sum(x))
+
+head(otu_table(physeq3_abund))
+head(otu_table(physeq3_abund_filt))
+head(otu_table(physeq3_abund_filt_re))
+
+write.table(otu_table(physeq3_abund), "rel.abund.txt")
+write.table(otu_table(physeq3_abund_filt), "rel.abund.filt.txt")
+write.table(otu_table(physeq3_abund_filt_re), "rel.abund.filt.re.txt")
+
+physeq3_abund_filt_re
+#?phyloseq
+
+#if I want to rarify 
+#set.seed(1782) # set seed for analysis reproducibility
+#OTU_filt_rar = rarefy_even_depth(otu_table(data_phylo_filt), rngseed = TRUE, replace = FALSE) # rarefy the raw data using Phyloseq package
+#data_otu_filt_rar = data.frame(otu_table(OTU_filt_rar)) # create a separated file
+#data_phylo_filt_rar <- phyloseq(OTU_filt_rar, TAX, SAM) # create a phyloseq object
+
+#sample_variables(physeq3_abund_filt)
+#top20otus = names(sort(taxa_sums(physeq3_abund_filt), TRUE)[1:25])
+#taxtab20 = cbind(tax_table(physeq3_abund_filt), genus_20 = NA)
+#taxtab20[top20otus, "genus_20"] <- as(tax_table(physeq3_abund_filt)[top20otus, "Genus"],
+#                                      "character")
+#tax_table(prune.dat) <- tax_table(taxtab20)
+
+#prune.dat <- transform_sample_counts(prune.dat, function(x) 100 * x/sum(x))
+
+#title = "Relative Abundance"
+#genus_plot2 <- plot_bar(prune.dat, "Site", fill = "genus_20", title = title)
+#print(genus_plot2)
+
+
+#only top 20 taxa
+top20otus = names(sort(taxa_sums(physeq3_abund_filt), TRUE)[1:20])
+top20otus
+taxtab20 = cbind(tax_table(physeq3_abund_filt), family20 = NA)
+taxtab20
+taxtab20[top20otus, "family20"] <- as(tax_table(physeq3_abund_filt)[top20otus, "Family"], 
+                                      "character")
+tax_table(physeq3_abund_filt) <- tax_table(taxtab20)
+
+#Now create the abundance bar plot of restroomR using the plot_bar function.
+
+title = "Figure 1 Part A (remake), attempt 1"
+plot_bar(physeq3_abund_filt, "SURFACE", fill = "family20", title = title) + coord_flip()
+
+
+
+#so far so god, enough samples, and a lot of taxa
+#how much am I pruning here?
+#https://github.com/joey711/phyloseq/issues/1197
+#remove less than 2%
+prune.dat <- prune_taxa(taxa_sums(physeq3) > 2, physeq3)
+physeq1
+prune.dat
+
+?phyloseq:prune_taxa()
+
+
+plot_bar(physeq1_abund_filt_re, fill = "family")
+
+#way too many!
+plot_bar(physeq1_abund_filt_re, fill = "phylum") +
+  theme(legend.position="none")
+
+
+
+
+#plot 20 top taxa as barplot
+sample_variables(physeq1_abund_filt)
+top20otus = names(sort(taxa_sums(physeq1_abund_filt), TRUE)[1:20])
+taxtab20 = cbind(tax_table(physeq1_abund_filt), genus_20 = NA)
+taxtab20[top20otus, "genus_20"] <- as(tax_table(physeq1_abund_filt)[top20otus, "genus"],
+                                      "character")
+tax_table(physeq1_abund_filt) <- tax_table(taxtab20)
+
+physeq1_abund_filt_re_again <- transform_sample_counts(physeq1_abund_filt, function(x) 100 * x/sum(x))
+taxtab20
+title = "Relative Abundance"
+genus_plot2 <- plot_bar(physeq1_abund_filt, "Barcode", fill = "genus_20", title = title)
+print(genus_plot2)
+
+#test
+top20 <- names(sort(taxa_sums(physeq1_abund_filt), decreasing=TRUE)[1:20])
+top20 #shows 20 results
+
+dat.aglo = tax_glom(physeq1_abund_filt, taxrank = "genus")
+dat.trans = transform_sample_counts(dat.aglo, function(x) x/sum(x))
+
+prune.dat.two = prune_taxa(top20, dat.trans)
+dat.dataframe = psmelt(prune.dat.two)
+dat.agr = aggregate(Abundance~Treatment+Sampling+genus, data=dat.dataframe, FUN=mean)
+
+ggplot(dat.agr, aes(x=Treatment, y=Abundance, fill=genus)) + 
+  geom_bar(stat="identity", position="fill") + 
+  facet_grid(~Sampling, scale="free")
+
+
+#only display the top 50 taxa it's not working
+gpt <- subset_taxa(physeq3, kingdom=="Bacteria")
+gpt <- prune_taxa(names(sort(taxa_sums(gpt),TRUE)[1:50]), gpt)
+plot_heatmap(gpt, sample.label="Sampling")
+
+plot_heatmap(gpt, "NMDS", "bray", "Code", "genus")
+
+
+gpt <- subset_taxa(physeq3_abund_filt_re, kingdom=="Bacteria")
+gpt <- prune_taxa(names(sort(taxa_sums(gpt),TRUE)[1:50]), gpt)
+plot_heatmap(gpt, sample.label="Sampling")
+
+plot_heatmap(gpt, "NMDS", "bray", "Code", "genus")
+
+gpt <- subset_taxa(glom_filt_genus, kingdom=="Bacteria")
+gpt <- prune_taxa(names(sort(taxa_sums(gpt),TRUE)[1:20]), gpt)
+plot_heatmap(gpt, sample.label="Sampling")
+
+plot_heatmap(gpt, "NMDS", "bray", "Code", "genus")
+
+#trying to export the taxa table to find the specific species we are looking for!
+#
+
+data(physeq3)
+glom <- tax_glom(physeq3, taxrank='species')
+View(glom)
+otus <- otu_table(glom)
+View(otus)
+write.csv(otus, file='otus-species.count.csv')
+#filter abundance table
+glom_filt <- tax_glom(physeq3_abund_filt_re, taxrank='species')
+glom_filt
+otus_filt <- otu_table(glom_filt)
+write.csv(otus_filt, file='otus-species.abund.filter.csv')
+
+glom_filt_genus<- tax_glom(physeq3_abund_filt_re, taxrank='genus')
+otus_filt_genus <- otu_table(glom_filt_genus)
+write.csv(otus_filt, file='otus-genus.abund.filter.csv')
+
+#use tax_glom to agglomerate taxa based on taxonomic rank
+#use tip_glom to agglomerate taxa based on phylogeny
+
+#You can also export the genus-level data alongside the sample data using the psmelt function:
+?psmelt()
+dat <- psmelt(glom)
+write.csv(dat, file='otus-species-with-sample-data.csv')
+View(dat)
+dat_filt <- psmelt(glom_filt)
+write.csv(dat_filt, file='otus-species-with-sample-data-filtered.csv')
+
+#plot ordination by sample ####
+#if I want, keep only species from the five most abundant phyla
+
+#phylum.sum = tapply(taxa_sums(GP1), tax_table(GP1)[, "Phylum"], sum, na.rm=TRUE)
+#top5phyla = names(sort(phylum.sum, TRUE))[1:5]
+#GP1 = prune_taxa((tax_table(GP1)[, "Phylum"] %in% top5phyla), GP1)
+
+my_symbols <- c(1,2,3,4,5,6,7) 
+
+GP.ord <- ordinate(physeq3_abund_filt_re, "NMDS", "bray")
+p2 = plot_ordination(physeq3_abund_filt_re, GP.ord, type="samples", color="Treatment", shape="Sampling") 
+p2 + geom_point(size=2 ) + ggtitle("samples") +
+  scale_shape_manual(values = my_symbols)
+
+test
+#### alpha diversity plot ####
+#https://joey711.github.io/phyloseq/plot_richness-examples.html
+#set the theme and colors for the plot
+theme_set(theme_bw())
+pal = "Set1"
+scale_colour_discrete <-  function(palname=pal, ...){
+  scale_colour_brewer(palette=palname, ...)
+}
+scale_fill_discrete <-  function(palname=pal, ...){
+  scale_fill_brewer(palette=palname, ...)
+}
+#transform data to integers (round them up to closest integer)
+
+physeq_int = transform_sample_counts(physeq2, round)
+#physeq_int
+#make sure there is no empty values
+physeq_alpha <- prune_taxa(taxa_sums(physeq_int) > 0, physeq_int)
+
+#physeq_alpha
+#taxa_names(physeq2)
+#physeq_alpha()
+plot_richness(physeq_alpha)
+plot_richness(physeq_alpha, measures=c("Chao1", "Shannon"))
+
+plot_richness(physeq_alpha, x="Sampling", color = "Treatment")#, measures=c("Chao1", "Shannon"))
+
+#changing the order of the variables
+#https://github.com/joey711/phyloseq/issues/1075
+p <- plot_richness(physeq_alpha, x="Sampling", color = "Treatment")#, measures=c("Chao1", "Shannon"))
+levels_sampling <- c("T0", "T1", "T3", "T5", "T7", "T10", "T12")
+p$data$Sampling <- factor(p$data$Sampling, levels = levels_sampling)
+print(p)
+
+
+p <- plot_richness(physeq_alpha, x="Sampling", color = "Treatment") + #, measures=c("Chao1", "Shannon")) 
+        geom_boxplot()
+levels_sampling <- c("T0", "T1", "T3", "T5", "T7", "T10", "T12")
+p$data$Sampling <- factor(p$data$Sampling, levels = levels_sampling)
+print(p)
+####alpha diversity statistics ####
+
+#export the alpha diversity estimates from phyloseq
+rich = estimate_richness(physeq_alpha)
+rich
+physeq_alpha
+#multiple
+kruskal.test(rich$Observed, sample_data(physeq_alpha)$Treatment)
+
+#pairwise placebo vs probiotic
+pairwise.wilcox.test(rich$Observed, sample_data(physeq_alpha)$Treatment)
+
+#pairwise.wilcox.test(rich$Observed, sample_data(physeq_alpha)$Treatment, p.adjust.method = "BH")
+#Pairwise comparisons using Wilcoxon rank sum test with continuity correction 
+
+#data:  rich$Observed and sample_data(physeq_alpha)$Treatment 
+
+#Placebo
+#Probiotic 0.008  
+
+#P value adjustment method: holm
+
+#pairwise placebo vs probiotic
+pairwise.wilcox.test(rich$Shannon, sample_data(physeq_alpha)$Treatment)
+
+#Pairwise comparisons using Wilcoxon rank sum test with continuity correction 
+
+#data:  rich$Shannon and sample_data(physeq_alpha)$Treatment 
+
+#Placebo
+#Probiotic 0.0019 
+
+#P value adjustment method: holm 
+
+#pairwise placebo vs probiotic
+pairwise.wilcox.test(rich$Simpson, sample_data(physeq_alpha)$Treatment)
+
+#Pairwise comparisons using Wilcoxon rank sum test with continuity correction 
+
+#data:  rich$Simpson and sample_data(physeq_alpha)$Treatment 
+
+#Placebo
+#Probiotic 0.0058 
+
+#P value adjustment method: holm 
+
+#pairwise Bolzano vs Bari
+pairwise.wilcox.test(rich$Observed, sample_data(physeq_alpha)$place)
+
+#Pairwise comparisons using Wilcoxon rank sum test with continuity correction 
+
+#data:  rich$Observed and sample_data(physeq_alpha)$place 
+
+#Bari 
+#Bolzano 0.011
+
+#P value adjustment method: holm 
+#
+
+#multiple
+kruskal.test(rich$Observed, sample_data(physeq_alpha)$Sampling)
+
+
+
+#alpha diversity over the two groups - placebo/probiotic , T0, T12, one in the middle
+#dendrogram species, barplot abundances - 
+#for later - check the abundance of the probiotic species and to Kruskal-wallis/wilcox on those
+#to check if any difference in abundance is 
+
+
+test_differential_abundance_Kruskal(physeq, group, compare = NULL,
+                                    block = NULL, p.adjust.method = "fdr")
+
+# If there are only 2 levels for \code{Diet}
+res <- test_differential_abundance_Kruskal(physeq1, group = "place")
+
+# If there are multiple levels for \code{Diet}
+res <- test_differential_abundance_Kruskal(physeq, group = "Diet", compare=c("Control", "High_Fat"), block = "Gender")
+res <- test_differential_abundance_Kruskal(physeq, group = "Diet", compare=c("Control", "High_Fibre"), block = "Gender")
+
+
+#
+
+TopNOTUs <- names(sort(taxa_sums(glom_filt_genus), TRUE)[1:20])
+ent20   <- prune_taxa(TopNOTUs, glom_filt_genus)
+ent20
+ent20_re = transform_sample_counts(ent20, function(x) x / sum(x))
+
+plot_bar()
+title = "Top 20"
+plot_bar(ent20_re, fill="genus", title = title, facet_grid=~Treatment)
+
+#plot abundance
+
+
+#lefse
+#lefser needs data in a SummarizedExperiment object
+BiocManager::install("SummarizedExperiment")
+library("SummarizedExperiment")
+zeller14
+install.packages("microbial")
+library("microbial")
+genus_table_sub_short_new
+ldamarker(genus_table_sub_short_new, Treatment, pvalue = 0.05, normalize = TRUE, method = "relative")
+
+library("vegan")
+treatment_group = get_variable(genus_table_sub_short_new, "Treatment")
+treatment_ano = anosim(phyloseq::distance(genus_table_sub_short_new, "bray"), treatment_group)
+treatment_ano$signif
+
+treatment_ano
+treatment_ano$statistic
+
+Sampling_group = get_variable(genus_table_sub_short_new, "Sampling")
+Sampling_ano = anosim(phyloseq::distance(genus_table_sub_short_new, "bray"), Sampling_group)
+Sampling_ano$signif
+Sampling_ano
+
+Sampling_ano$statistic
+#nothing significant
+library("vegan")
+sample_data(genus_table_sub_short_new)
+df = as(sample_data(genus_table_sub_short_new), "data.frame")
+d = phyloseq::distance(genus_table_sub_short_new, "bray")
+d
+result_adonis = adonis2(d ~ Treatment + Sampling, df)
+result_adonis
+plot(result_adonis$aov.tab)
+
+
+# Permutation test for adonis under reduced model
+# Terms added sequentially (first to last)
+# Permutation: free
+# Number of permutations: 999
+# 
+# adonis2(formula = d ~ Treatment + Sampling, data = df)
+#           Df  SumOfSqs  R2      F     Pr(>F)   
+# Treatment  1   0.2605 0.02711 2.4611  0.010 **
+# Sampling   2   0.1385 0.01441 0.6542  0.927   
+# Residual  87   9.2077 0.95847                 
+# Total     90   9.6066 1.00000                 
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+result_adonis = adonis2(d ~ Treatment*Sampling, df)
+result_adonis
+plot(result_adonis$aov.tab)
+
+
+#for sampling times, how to show that there is a difference between T0, T1, T10, T12
+#subset probiotic####
+physeq
+
+physeq_probiotic <- subset_samples(physeq, Treatment%in%c("Probiotic"))
+physeq_probiotic_T0 <- subset_samples(physeq_probiotic, Sampling%in%c("T1", "T3", "T5", "T7", "T10", "T12"))
+physeq_placebo <- subset_samples(physeq, Treatment%in%c("Placebo"))
+physeq_placebo_T0 <- subset_samples(physeq_placebo, Sampling%in%c("T1", "T3", "T5", "T7", "T10", "T12"))
+
+physeq_probiotic
+
+#check if there are any taxa that have no reads in any sample 
+
+any(taxa_sums(physeq_probiotic) == 0)
+any(taxa_sums(physeq_placebo) == 0)
+#TRUE - we removed samples
+#if so, how many?
+sum(taxa_sums(physeq_probiotic) == 0) #33
+sum(taxa_sums(physeq_placebo) == 0) #33
+#in case there are taxa with zero reads, here's how to remove them:
+#save the original objevt, in case you need it later
+physeq_probiotic_original = physeq_probiotic
+physeq_placebo_original = physeq_placebo
+
+physeq_probiotic_T0 = prune_taxa(taxa_sums(physeq_probiotic_T0) > 0, physeq_probiotic_T0)
+physeq_placebo_T0 = prune_taxa(taxa_sums(physeq_placebo_T0) > 0, physeq_placebo_T0)
+
+
+any(taxa_sums(physeq_probiotic_T0) == 0) #FALSE
+sum(taxa_sums(physeq_placebo_T0) == 0) #0
+
+any(taxa_sums(physeq_probiotic_T0) == 0) #FALSE
+sum(taxa_sums(physeq_placebo_T0) == 0) #0
+
+#all good
+# higest abundant genus in all probiotic samples
+genus_probiotic_T0 <- physeq_probiotic_T0 %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+genus_probiotic_T0
+
+genus_probiotic_T0 %>%
+  group_by(genus) %>%
+  summarise(Abundance = mean(Abundance)) %>%
+  arrange(-Abundance)
+
+# # A tibble: 1,285 × 2
+# genus                      Abundance
+# <chr>                          <dbl>
+# 1 Blautia                         10.8 
+# 2 Faecalibacterium                8.87
+# 3 unspecific_Lachnospiraceae      6.63
+# 4 Bifidobacterium                 4.09
+# 5 Roseburia                       3.83
+# 6 Agathobacter                    3.58
+# 7 Bacteroides                     3.58
+# 8 Subdoligranulum                 3.58
+# 9 Fusicatenibacter                2.94
+# 10 Ruminococcus                    2.46
+
+# higest abundant family in all probiotic samples
+family_probiotic_T0 <- physeq_probiotic_T0 %>%
+  tax_glom("family") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+family_probiotic_T0 %>%
+  group_by(family) %>%
+  summarise(Abundance = mean(Abundance)) %>%
+  arrange(-Abundance)
+
+# higest abundant in all placebo samples
+genus_placebo_T0 <- physeq_placebo_T0 %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+#genus_placebo_T0
+
+genus_placebo_T0 %>%
+  group_by(genus) %>%
+  summarise(Abundance = mean(Abundance)) %>%
+  arrange(-Abundance)
+
+# # A tibble: 998 × 2
+# genus                       Abundance
+# <chr>                           <dbl>
+# 1 Blautia                          15.3 
+# 2 Faecalibacterium                 7.84
+# 3 unspecific_Lachnospiraceae       5.91
+# 4 Agathobacter                     5.75
+# 5 Bifidobacterium                  4.49
+# 6 Roseburia                        4.03
+# 7 Bacteroides                      3.16
+# 8 Erysipelotrichaceae UCG-003      2.94
+# 9 Fusicatenibacter                 2.93
+# 10 Ruminococcus                     2.74
+
+# higest abundant family in all placebo samples
+family_placebo_T0 <- physeq_placebo_T0 %>%
+  tax_glom("family") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) %>%
+  psmelt() %>%
+  as_tibble
+
+family_placebo_T0 %>%
+  group_by(family) %>%
+  summarise(Abundance = mean(Abundance)) %>%
+  arrange(-Abundance)
+
+# # A tibble: 506 × 2
+# family                    Abundance
+# <chr>                         <dbl>
+# 1 Lachnospiraceae                50.9 
+# 2 Ruminococcaceae                14.9 
+# 3 Bifidobacteriaceae             4.50
+# 4 Erysipelatoclostridiaceae      4.36
+# 5 Bacteroidaceae                 3.16
+# 6 Oscillospiraceae               2.24
+# 7 unspecific_Bacteria            1.86
+# 8 Rikenellaceae                  1.49
+# 9 Prevotellaceae                 1.45
+# 10 unspecific_Clostridia          1.34
+
+
+#subset T0, T1, T10, T12
+T0 <- subset_samples(physeq, Sampling=="T0")
+T1  <- subset_samples(physeq, Sampling=="T1")
+T10 <- subset_samples(physeq, Sampling=="T10")
+T12 <- subset_samples(physeq, Sampling=="T12")
+
+physeq_sub <- merge_phyloseq(T1,T10,T12)
+
+
+
+#check difference between time points in placebo and probiotic
+#run alpha diversity statistics
+physeq_probiotic_T0
+physeq_placebo_T0
+
+physeq_probiotic_T0_int = transform_sample_counts(physeq_probiotic_T0, round)
+physeq_placebo_T0_int = transform_sample_counts(physeq_placebo_T0, round)
+
+physeq_probiotic_T0_alpha <- prune_taxa(taxa_sums(physeq_probiotic_T0_int) > 0, physeq_probiotic_T0_int)
+physeq_placebo_T0_alpha <- prune_taxa(taxa_sums(physeq_placebo_T0_int) > 0, physeq_placebo_T0_int)
+
+#export the alpha diversity estimates from phyloseq
+rich_probiotic = estimate_richness(physeq_probiotic_T0_alpha, measures = c("Observed", "Chao1", "Shannon", "Simpson", "Fisher")) %>%
+  rownames_to_column(var="sample")
+
+rich_placebo = estimate_richness(physeq_placebo_T0_alpha, measures = c("Observed", "Chao1", "Shannon", "Simpson", "Fisher")) %>%
+  rownames_to_column(var="sample")
+
+#multiple
+kruskal.test(rich_probiotic$Shannon, sample_data(physeq_probiotic_T0_alpha)$Sampling)
+
+kruskal.test(rich_placebo$Shannon, sample_data(physeq_placebo_T0_alpha)$Sampling)
+
+#no difference in alpha diversity between time points for each treatment
+
+#agglomerate genus, filters 
+
+# adonis on Sampling T1-T12####
+#https://www.youtube.com/watch?v=oLf0EpMJ4yA
+physeq_T1_T12 <- subset_samples(physeq, Sampling%in%c("T1", "T3", "T5", "T7","T10", "T12"))
+physeq_T1_T12
+
+#remove empty
+any(taxa_sums(physeq_T1_T12) == 0)
+#TRUE - we removed samples
+#if so, how many?
+sum(taxa_sums(physeq_T1_T12) == 0) #806
+
+#in case there are taxa with zero reads, here's how to remove them:
+#save the original objevt, in case you need it later
+physeq_T1_T12_original = physeq_T1_T12
+physeq_T1_T12 = prune_taxa(taxa_sums(physeq_T1_T12) > 0, physeq_T1_T12)
+
+
+physeq_genus_T1_T12 <- physeq_T1_T12 %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) 
+
+physeq_genus_T1_T12_prune <- prune_taxa(taxa_sums(physeq_genus_T1_T12) > 0.02, physeq_genus_T1_T12) %>%
+  transform_sample_counts(function(x)100* x / sum(x)) 
+
+df = as(sample_data(physeq_genus_T1_T12_prune), "data.frame")
+df_new <- df %>% mutate(treatment_sampling=paste0(Treatment, Sampling))
+View(df_new)
+colnames(df)
+
+d = phyloseq::distance(physeq_genus_T1_T12_prune, "bray")
+class(d)
+#need to make adonis on a class - 'dist' object
+result_adonis_T1_T12 = adonis2(d ~ Treatment*Sampling, df_new, strata = df_new$Code, permutations = 1e4)
+result_adonis_T1_T12
+
+# Permutation test for adonis under reduced model
+# Terms added sequentially (first to last)
+# Permutation: free
+# Number of permutations: 999
+# 
+# adonis2(formula = d ~ Treatment + Sampling, data = df)
+#             Df SumOfSqs     R2      F  Pr(>F)    
+# Treatment   1   0.5039 0.02606 4.6520  0.001 ***
+# Sampling    5   0.3109 0.01608 0.5741  0.999    
+# Residual  171  18.5222 0.95786                  
+# Total     177  19.3370 1.00000                  
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+#SIMPER
+#run bray curtis diss. with vegan
+#vegdist, designdist
+
+
+#
+bd <-betadisper(d, df$Treatment)
+anova(bd)
+permutest(bd, permutations = 1e5) #not significant
+# Permutation test for homogeneity of multivariate dispersions
+# Permutation: free
+# Number of permutations: 1e+05
+# 
+# Response: Distances
+# Df  Sum Sq   Mean Sq      F N.Perm  Pr(>F)  
+# Groups      1 0.01506 0.0150628 3.4481  1e+05 0.06535 .
+# Residuals 176 0.76885 0.0043685                        
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+bd <-betadisper(d, df$Sampling) # redo this for when I've split placebo/treatment
+anova(bd)
+permutest(bd, permutations = 1e5) #not significant
+
+# Permutation test for homogeneity of multivariate dispersions
+# Permutation: free
+# Number of permutations: 1e+05
+# 
+# Response: Distances
+# Df  Sum Sq   Mean Sq     F N.Perm Pr(>F)
+# Groups      5 0.00684 0.0013682 0.247  1e+05 0.9413
+# Residuals 172 0.95270 0.0055389  
+
+#adonis subset treatment####
+#physeq abund, genus, subset Treatment
+#subset probiotic/placebo####
+physeq_probiotic_genus_full <- subset_samples(physeq_abund_genus_prune_all, Treatment%in%c("Probiotic"))
+physeq_placebo_genus_full <- subset_samples(physeq_abund_genus_prune_all, Treatment%in%c("Placebo"))
+
+#remove taxa with no occurences
+physeq_probiotic_genus_full = prune_taxa(taxa_sums(physeq_probiotic_genus_full) > 0, physeq_probiotic_genus_full)
+physeq_placebo_genus_full = prune_taxa(taxa_sums(physeq_placebo_genus_full) > 0, physeq_placebo_genus_full)
+
+any(taxa_sums(physeq_probiotic_genus_full) == 0) #FALSE
+sum(taxa_sums(physeq_probiotic_genus_full) == 0) #0
+any(taxa_sums(physeq_placebo_genus_full) == 0) #FALSE
+sum(taxa_sums(physeq_placebo_genus_full) == 0) #0
+
+#probiotic adonis####
+d_pro = phyloseq::distance(physeq_probiotic_genus_full, "bray")
+class(d_pro)
+d_pro
+df_pro = as(sample_data(physeq_probiotic_genus_full), "data.frame")
+#need to make adonis on a class - 'dist' object
+
+result_adonis_pro_genus_all = adonis2(d_pro ~ Sampling, df_pro, strata = df_pro$Code)
+result_adonis_pro_genus_all
+
+# Permutation test for adonis under reduced model
+# Terms added sequentially (first to last)
+# Blocks:  strata 
+# Permutation: free
+# Number of permutations: 999
+# 
+# adonis2(formula = d_pro ~ Sampling, data = df_pro, strata = df_pro$Code)
+#           Df SumOfSqs      R2      F Pr(>F)  
+# Sampling   6   0.4054 0.02842 0.6434  0.011 *
+# Residual 132  13.8598 0.97158                
+# Total    138  14.2652 1.00000                
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+#
+bd_pro <-betadisper(d_pro, df_pro$Sampling)
+anova(bd_pro)
+permutest(bd_pro, pairwise = TRUE) #not significant
+bd_pro
+# Average distance to median:
+#   T0     T1    T10    T12     T3     T5     T7 
+# 0.3073 0.3085 0.3107 0.3059 0.2964 0.3068 0.323
+#placebo adonis####
+d_pla = phyloseq::distance(physeq_placebo_genus_full, "bray")
+class(d_pla)
+d_pla
+df_pla = as(sample_data(physeq_placebo_genus_full), "data.frame")
+#need to make adonis on a class - 'dist' object
+
+result_adonis_pla_genus_all = adonis2(d_pla ~ Sampling, df_pla, strata = df_pla$Code)
+result_adonis_pla_genus_all
+
+# Permutation test for adonis under reduced model
+# Terms added sequentially (first to last)
+# Blocks:  strata 
+# Permutation: free
+# Number of permutations: 999
+# 
+# adonis2(formula = d_pla ~ Sampling, data = df_pla, strata = df_pla$Code)
+#           Df SumOfSqs      R2     F Pr(>F)  
+# Sampling  6   0.3972 0.05267 0.556  0.043 *
+# Residual 60   7.1441 0.94733               
+# Total    66   7.5413 1.00000               
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+#
+bd_pla <-betadisper(d_pla, df_pla$Sampling)
+anova(bd_pla)
+permutest(bd_pla, pairwise = TRUE) #not significant
+bd_pla
+#Average distance to median:
+# T0     T1    T10    T12     T3     T5     T7 
+# 0.3082 0.3051 0.3044 0.3177 0.3500 0.3387 0.3237
+
+#adonis full dataset####
+physeq_abund_genus_prune_all
+#placebo adonis####
+d_full = phyloseq::distance(physeq_abund_genus_prune_all, "bray")
+d_full
+df_full = as(sample_data(physeq_abund_genus_prune_all), "data.frame") %>%
+  mutate(treatment_sampling=paste0(Treatment, Sampling))
+#need to make adonis on a class - 'dist' object
+
+result_adonis_genus_all = adonis2(d_full ~ Treatment*Sampling, df_full, strata = df_full$Code)
+result_adonis_genus_all #Treatment and Sampling significant
+
+# Permutation test for adonis under reduced model
+# Terms added sequentially (first to last)
+# Blocks:  strata 
+# Permutation: free
+# Number of permutations: 999
+# 
+# adonis2(formula = d_full ~ Treatment * Sampling, data = df_full, strata = df_full$Code)
+#                     Df SumOfSqs      R2      F Pr(>F)   
+# Treatment            1   0.6220 0.02773 5.6860  0.003 **
+# Sampling             6   0.4442 0.01981 0.6768  0.003 **
+# Treatment:Sampling   6   0.3584 0.01598 0.5460  0.123   
+# Residual           192  21.0039 0.93648                 
+# Total              205  22.4285 1.00000                 
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+bd_full <-betadisper(d_full, df_full$Treatment)
+anova(bd_full)
+permutest(bd_full) #not significant
+bd_full
+# Average distance to median:
+#   Placebo Probiotic 
+# 0.3307    0.3131 
+
+bd_full <-betadisper(d_full, df_full$Sampling)
+anova(bd_full)
+permutest(bd_full, pairwise = TRUE) #not significant
+bd_full
+
+# Average distance to median:
+#   T0     T1    T10    T12     T3     T5     T7 
+# 0.3163 0.3101 0.3170 0.3157 0.3164 0.3269 0.3271
+
+
+
+
+## Bray-Curtis distances between samples
+dis <- vegdist(d_full)
+
+## Calculate multivariate dispersions
+mod <- betadisper(dis, group = df_full$Treatment)
+mod
+TukeyHSD(mod)
+
+dis <- vegdist(d_pro)
+mod <- betadisper(dis, group = df_pro$Sampling)
+TukeyHSD(mod)
+
+## placebo
+dis <- vegdist(d_pro)
+mod <- betadisper(dis, group = df_pro$Sampling)
+TukeyHSD(mod)
+
+#probiotic
+dis <- vegdist(d_pla)
+mod <- betadisper(dis, group = df_pla$Sampling)
+TukeyHSD(mod)
+#
+
+#run SIMPER to Discriminate species between two groups (which species are important for the dissimilarity)
+data(dune)
+data(dune.env)
+head(dune)
+head(dune.env)
+(sim <- with(dune.env, simper(dune, Management)))
+summary(sim)
+
+
+#https://www.yanh.org/2021/01/01/microbiome-r/
+
+#ANCOMBC
+BiocManager::install("ANCOMBC")
+library("ANCOMBC")
+
+#http://www.bioconductor.org/packages/release/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC.html
+
+genus_ancom <- physeq %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x))
+physeq_genus_ancom<- genus_ancom
+physeq_genus_ancom
+?ancombc()
+?ancombc2()
+out = ancombc(
+  phyloseq = physeq_genus_ancom, 
+  formula = "Sampling+Treatment", 
+  p_adj_method = "fdr", 
+#  zero_cut = 0.90, # by default prevalence filter of 10% is applied
+  lib_cut = 0, 
+  group = "Treatment", 
+  struc_zero = TRUE, 
+  neg_lb = TRUE, 
+  tol = 1e-5, 
+  max_iter = 100, 
+  conserve = TRUE, 
+  alpha = 0.05, 
+  global = TRUE
+)
+out
+res <- out$res
+res
+
+write.csv(res, "res.ANCOMB.csv")
+
+#redo with T0
+
+
+
+
+#beta diversity all time points####
+##convert to relative abundance ####
+physeq_abund = transform_sample_counts(physeq, function(x) x / sum(x) )
+physeq_abund
+
+physeq
+physeq_abund
+#agglomerate on genus
+physeq_abund_genus <- physeq_abund %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x))
+#remove taxa <0.02
+physeq_abund_genus_prune_all <-prune_taxa(taxa_sums(physeq_abund_genus) > 0.02, physeq_abund_genus) %>%
+  transform_sample_counts(function(x)100* x / sum(x)) 
+
+physeq_abund_genus_prune_all = prune_taxa(taxa_sums(physeq_abund_genus_prune_all) > 0, physeq_abund_genus_prune_all)
+
+
+#abundance genus level, all samples ####
+physeq_abund_genus_prune_all
+
+physeq_abund_genus_prune_all_melt <- psmelt(physeq_abund_genus_prune_all) %>%
+  select(c("Sample", "Abundance", genus)) %>%
+  pivot_wider(names_from = genus, values_from = Abundance) %>%
+  column_to_rownames(var="Sample")%>%
+  t()
+
+#for lefse, all samples
+physeq_abund_genus_prune_all_melt_t <- psmelt(physeq_abund_genus_prune_all) %>%
+  select(c("Sample", "Abundance", genus)) %>%
+  pivot_wider(names_from = genus, values_from = Abundance) 
+
+physeq_abund_genus_prune_all_melt_t_meta <- left_join(physeq_abund_genus_prune_all_melt_t, meta_alpha, by=c("Sample"="xBarcode"))  %>%
+  column_to_rownames(var="Sample")%>%
+  t()
+
+head(meta_alpha)
+write.table(physeq_abund_genus_prune_all_melt, "EG.genus.abund.all.txt", sep = "\t")
+write.table(physeq_abund_genus_prune_all_melt_t_meta, "EG.genus.abund.all.meta.txt", sep = "\t")
+
+
+
+View(physeq_abund_genus_prune_all_melt_t_meta)
+
+
+
+
+
+#PCoA full dataset, genus level####
+
+physeq.PCoA.full.genus <- ordinate(physeq_abund_genus_prune_all, "PCoA", "bray")
+
+#extract the data from phyloseq
+pcoa_vectors <- physeq.PCoA.full.genus$vectors %>% 
+  as.data.frame()%>% 
+  rownames_to_column(var="ID") %>%
+  select(ID,Axis.1:Axis.2)
+
+pcoa_vectors_meta <- left_join(pcoa_vectors, meta_alpha, by=c("ID"="xBarcode")) 
+pcoa_vectors_meta$Sampling<-factor(pcoa_vectors_meta$Sampling, levels = levels_sampling_new)
+
+# #trying colors based on individual
+# ggplot(pcoa_vectors_meta, aes(x=Axis.1, y=Axis.2, 
+#                               color=Code, shape=Sampling,
+#                               group=Code, 
+#                               order=Sampling)) + 
+#   geom_point() +
+#   scale_shape_manual(values=my_symbols_sub) +
+#  # scale_color_manual() +
+#   geom_path(aes(order=Sampling)) + 
+#   ylab("PCoa 2 (11.8%)") +
+#   xlab("PCoa 2 (22.3%)") +
+#   facet_wrap(. ~ Treatment, scales='free_y', ncol = 7, nrow = 5)
+# 
+# ggsave("pcoa_genus_time-all_treatment.png", width = 8, height = 5, dpi = 600 )
+# ggsave("pcoa_genus_time-all_treatment.pdf", width = 8, height = 5, dpi = 600 )
+
+
+#colors based on treatment
+
+my_symbols=c(0,15,8,19,17,18,1)
+my_symbols_sub =c(0,15,18,1)
+
+ggplot(pcoa_vectors_meta, aes(x=Axis.1, y=Axis.2, 
+                              color=Treatment, shape=Sampling)) + 
+  geom_point() +
+  scale_shape_manual(values=my_symbols) +
+  scale_color_manual(values = colors_treatment) +
+  ggtitle(("PCoA genus level")) +
+ # geom_path() + 
+  ylab("PCo1 (11.8%)") +
+  xlab("PCo2 (22.3%)")# +
+ # facet_wrap(. ~ Treatment, scales='free_y', ncol = 7, nrow = 5)
+
+ggsave("pcoa_genus_time-all_treatment_newname.png", width = 8, height = 5, dpi = 600 )
+ggsave("pcoa_genus_time-all_treatment_newname.pdf", width = 8, height = 5, dpi = 600 )
+
+View(pcoa_vectors_meta)
+
+pcoa_vectors_meta_extra <- pcoa_vectors_meta %>%
+  mutate(treatment_sampling=paste0(Treatment,Sampling))
+
+
+# separate and with centroids
+centroid <-pcoa_vectors_meta_extra %>% 
+  group_by(treatment_sampling) %>% 
+  summarize(PCoA1=mean(Axis.1), PCoA2=mean(Axis.2))
+  
+ggplot(pcoa_vectors_meta, aes(x=Axis.1, y=Axis.2, 
+                              color=Treatment, shape=Sampling)) + 
+  geom_point() +
+  scale_shape_manual(values=my_symbols) +
+  scale_color_manual(values = colors_treatment) +
+  ggtitle(("PCoA genus level")) +
+  # geom_path() + 
+ # stat_ellipse(aes(x=Axis.1, y=Axis.2,color=treatment_sampling, group=treatment_sampling),
+   #            type = "norm", colour = "black") +
+#  geom_point(data=centroid, size=5, shape=21, color="black")+
+# facet_wrap(. ~ Treatment, scales='free_y', ncol = 7, nrow = 5) +
+ ylab("PCo1 (11.8%)") +
+  xlab("PCo2 (22.3%)")
+
+
+#color based on individuals 
+# PCoA.full.genus <- plot_ordination(physeq_abund_genus_prune_all, 
+#                                    physeq.PCoA.full.genus, 
+#                                    type="sample", 
+#                                    color="Code", 
+#                                    shape="Sampling")
+# View(physeq.PCoA.full.genus)
+# plot_ordination(physeq_abund_genus_prune_all, 
+#                 physeq.PCoA.full.genus, 
+#                 type="sample", 
+#                 color="Code", 
+#                 shape="Sampling") +
+#   scale_shape_manual(values=my_symbols_sub) +
+#   # geom_line(aes(group = Code)) +
+#   geom_path(group="Code") + 
+#   #ylab("PCoa 2 (11.8%)") +
+#   #xlab("PCoa 2 (22.3%)") +
+#   facet_wrap(. ~ Treatment, scales='free_y', ncol = 7, nrow = 5)
+#   
+
+levels_sampling
+PCoA.full.genus
+PCoA.full.genus$physeq_abund_genus_prune_all$Sampling
+physeq.PCoA.full.genus$physeq_abund_genus_prune_all$Sampling <- factor(physeq.PCoA.full.genus$physeq_abund_genus_prune_all$Sampling, 
+                                                levels = levels_sampling)
+my_symbols=c(15,16,1,2,3,17,18)
+PCoA.full.genus +
+  scale_shape_manual(values=my_symbols) +
+ # geom_line(aes(group = Code)) +
+  geom_path(group="Code") + 
+  facet_wrap(. ~ Treatment, scales='free_y', ncol = 7, nrow = 5)
+  
+  
+#### tests of taxa of interest, full table ####
+
+
+
+
+
+#tables for Bodo####
+#subset probiotic/placebo####
+physeq_probiotic <- subset_samples(physeq_abund_prune_all, Treatment%in%c("Probiotic"))
+physeq_placebo <- subset_samples(physeq_abund_prune_all, Treatment%in%c("Placebo"))
+
+#remove taxa with no occurences
+physeq_probiotic = prune_taxa(taxa_sums(physeq_probiotic) > 0, physeq_probiotic)
+physeq_placebo = prune_taxa(taxa_sums(physeq_placebo) > 0, physeq_placebo)
+
+any(taxa_sums(physeq_probiotic) == 0) #FALSE
+sum(taxa_sums(physeq_probiotic) == 0) #0
+any(taxa_sums(physeq_placebo) == 0) #FALSE
+sum(taxa_sums(physeq_placebo) == 0) #0
+
+#phylum level
+physeq_probiotic_phylum <- physeq_probiotic %>%
+  tax_glom("phylum") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) 
+
+physeq_placebo_phylum <- physeq_placebo %>%
+  tax_glom("phylum") %>%
+  transform_sample_counts(function(x)100* x / sum(x))
+
+#genus level
+physeq_probiotic_genus <- physeq_probiotic %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) 
+
+physeq_placebo_genus <- physeq_placebo %>%
+  tax_glom("genus") %>%
+  transform_sample_counts(function(x)100* x / sum(x))
+
+#species level
+physeq_probiotic_species <- physeq_probiotic %>%
+  tax_glom("species") %>%
+  transform_sample_counts(function(x)100* x / sum(x)) 
+
+physeq_placebo_species <- physeq_placebo %>%
+  tax_glom("species") %>%
+  transform_sample_counts(function(x)100* x / sum(x))
+
+
+
+physeq_abund_prune_all
+
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+
+physeq_abund_prune_all
+
+levels_sampling <- c("T0", "T1", "T3", "T5", "T7", "T10", "T12")
+physeq_abund_prune_all$Sampling <- factor(physeq_abund_prune_all$Sampling, levels = levels_sampling)
+
+#genus
+ps_genus <- tax_glom(physeq_abund_prune_all, taxrank = "genus", NArm = FALSE)
+ps_genusP <- subset_taxa(physeq_abund_prune_all, genus %in% c("Neisseria", "Escherichia",
+                                                "Salmonella", "Bacteroides",
+                                                "Pseudomonas", 
+                                                "Bifidobacterium"))
+                         
+genus.df <- psmelt(ps_genusP)
+head(genus.df)
+names(genus.df)  # to choose factors you want to use to navigate
+                         
+MySummaryGenus <- genus.df %>%
+group_by(Treatment, Sampling, genus) %>%
+summarize(mean_abund = mean(Abundance, na.rm=TRUE)) 
+head(MySummaryGenus)     
+?pivot_wider()
+MySummaryGenus_wide <- pivot_wider(MySummaryGenus, names_from = genus, values_from = mean_abund)
+
+MySummaryGenus_wide
+
+write.csv(MySummaryGenus, "abundance.wanted.genera.csv")
+write.csv(MySummaryGenus_wide, "abundance.wanted.genera.wide.csv")
+#phyla
+ps_phylum <- tax_glom(physeq_abund_prune_all, taxrank = "phylum", NArm = FALSE)
+ps_phylumP <- subset_taxa(physeq_abund_prune_all, phylum %in% c("Proteobacteria"))
+
+phylum.df <- psmelt(ps_phylumP)
+head(phylum.df)
+#names(phylum.df)  # to choose factors you want to use to navigate
+
+MySummaryphylum.df <- phylum.df %>%
+  group_by(Treatment, Sampling, phylum) %>%
+  summarize(mean_abund = mean(Abundance, na.rm=TRUE)) 
+head(MySummaryphylum.df)   
+MySummaryphylum.df_wide <- pivot_wider(MySummaryphylum.df, names_from = phylum, values_from = mean_abund)
+
+write.csv(MySummaryphylum.df, "abundance.Proteobacteria.csv")
+write.csv(MySummaryphylum.df_wide, "abundance.Proteobacteria.wide.csv")
+
+#species
+ps_species <- tax_glom(physeq_abund_prune_all, taxrank = "species", NArm = FALSE)
+ps_speciesP <- subset_taxa(physeq_abund_prune_all, species %in% c("prausnitzii"))
+species.df <- psmelt(ps_speciesP)
+head(species.df)
+names(species.df)  # to choose factors you want to use to navigate
+
+
+MySummaryspecies <- species.df %>%
+  group_by(Treatment, Sampling, species) %>%
+  summarize(mean_abund = mean(Abundance, na.rm=TRUE)) 
+head(MySummaryspecies)   
+MySummaryspecies_wide <- pivot_wider(MySummaryspecies, names_from = species, values_from = mean_abund)
+
+write.csv(MySummaryspecies, "abundance.Fprausnitzii.csv")
+write.csv(MySummaryspecies_wide, "abundance.Fprausnitzii.wide.csv")
+
+#family
+ps_family <- tax_glom(physeq_abund_prune_all, taxrank = "family", NArm = FALSE)
+ps_familyP <- subset_taxa(physeq_abund_prune_all, family %in% c("Lactobacillaceae"))
+#family
+family.df <- psmelt(ps_familyP)
+head(family.df)
+names(family.df)  # to choose factors you want to use to navigate
+
+MySummaryfamily <- family.df %>%
+  group_by(Treatment, Sampling, family) %>%
+  summarize(mean_abund = mean(Abundance, na.rm=TRUE)) 
+head(MySummaryfamily) 
+MySummaryfamily_wide <- pivot_wider(MySummaryfamily, names_from = family, values_from = mean_abund)
+
+write.csv(MySummaryfamily, "abundance.Lactobacillaceae.csv")
+write.csv(MySummaryfamily_wide, "abundance.Lactobacillaceae.wide.csv")
+
+
+
+
+
+#timelag on distance matrix
+physeq_abund_genus_prune_all
+
+
+
+#abundances of taxa of interest
+
+# •Lactiplantibacillus plantarum subsp. plantarum DSM33363
+# •L.plantarum subsp. plantarum DSM33364
+# •Lacticaseibacillus paracasei subsp. paracasei DSM33373
+# •Limosilactobacillus reuteri DSM33374
+# •Bacillus megaterium DSM33300
+# •Bacillus pumilus DSM33335
+# •B.pumilus DSM33297
+
+#count number of unique phyla/orders/species etc####
+#https://forum.qiime2.org/t/counting-unique-species-in-r/11771/5
+physeq_abund_prune 
+rank_names(physeq_abund_prune)
+View()
+
+tax_table(physeq_abund_prune) %>%
+  as("matrix") %>%
+  as_tibble(rownames = "OTU") %>%
+  gather("Rank", "Name", rank_names(physeq_abund_prune)) %>%
+  na.omit() %>% # remove rows with NA value
+  group_by(Rank) %>%
+  summarize(ntaxa = length(unique(Name))) %>% # compute number of unique taxa
+  mutate(Rank = factor(Rank, rank_names(physeq_abund_prune))) %>%
+  arrange(Rank)
+
+# # A tibble: 7 × 2
+# Rank    ntaxa
+# <fct>   <int>
+#   1 kingdom     2
+# 2 phylum     11
+# 3 class      16
+# 4 order      33
+# 5 family     58
+# 6 genus     147
+# 7 species   216
+
+#acclomarate by genus
+physeq_abund_genus_prune_all
+
+
+
+species_interest <- c("Lactiplantibacillus plantarum",
+                      "Lacticaseibacillus paracasei",
+                      "Limosilactobacillus reuteri",
+                      "Bacillus megaterium",
+                      "Bacillus pumilus")
+genus_interest <- c("Lactiplantibacillus",
+                   "Lacticaseibacillus",
+                   "Limosilactobacillus",
+                   "Bacillus")
+
+#genus table
+ps_genusP <- subset_taxa(physeq_abund_genus_prune_all, genus %in% genus_interest)
+
+genus.df <- psmelt(ps_genusP)
+head(genus.df)
+#names(myphyla.df)  # to choose factors you want to use to navigate
+
+MySummary <- genus.df %>%
+  group_by(Treatment, Sampling, genus) %>%
+ #group_by(Treatment, genus) %>%
+  summarize(mean_abund = mean(Abundance, na.rm=TRUE)) 
+head(MySummary)
+print(MySummary, n=57)
+MySummary_test <- MySummary %>%
+  pivot_wider(Treatment:Sampling, names_from=genus, values_from=mean_abund)
+
+MySummary_test
+# Treatment Sampling genus               mean_abund
+# <chr>     <chr>    <chr>                    <dbl>
+#   1 Placebo   T0       Bacillus            0.00217   
+# 2 Placebo   T0       Lacticaseibacillus  0.000104  
+# 3 Placebo   T0       Lactiplantibacillus 0         
+# 4 Placebo   T0       Limosilactobacillus 0.000492  
+# 5 Placebo   T1       Bacillus            0.00242   
+# 6 Placebo   T1       Lacticaseibacillus  0.00304   
+# 7 Placebo   T1       Lactiplantibacillus 0         
+# 8 Placebo   T1       Limosilactobacillus 0.0000672 
+# 9 Placebo   T10      Bacillus            0.000503  
+# 10 Placebo   T10      Lacticaseibacillus  0.000309  
+# 11 Placebo   T10      Lactiplantibacillus 0         
+# 12 Placebo   T10      Limosilactobacillus 0.000106  
+# 13 Placebo   T12      Bacillus            0.0103    
+# 14 Placebo   T12      Lacticaseibacillus  0.00382   
+# 15 Placebo   T12      Lactiplantibacillus 0         
+# 16 Placebo   T12      Limosilactobacillus 0.000289  
+# 17 Placebo   T3       Bacillus            0.00203   
+# 18 Placebo   T3       Lacticaseibacillus  0.00266   
+# 19 Placebo   T3       Lactiplantibacillus 0.000266  
+# 20 Placebo   T3       Limosilactobacillus 0.000121  
+# 21 Placebo   T5       Bacillus            0.000913  
+# 22 Placebo   T5       Lacticaseibacillus  0.0181    
+# 23 Placebo   T5       Lactiplantibacillus 0.00000416
+# 24 Placebo   T5       Limosilactobacillus 0.000819  
+# 25 Placebo   T7       Bacillus            0.00180   
+# 26 Placebo   T7       Lacticaseibacillus  0.00134   
+# 27 Placebo   T7       Lactiplantibacillus 0         
+# 28 Placebo   T7       Limosilactobacillus 0.000158  
+# 29 Probiotic T0       Bacillus            0.00431   
+# 30 Probiotic T0       Lacticaseibacillus  0.00155   
+# 31 Probiotic T0       Lactiplantibacillus 0.000120  
+# 32 Probiotic T0       Limosilactobacillus 0.00293   
+# 33 Probiotic T1       Bacillus            0.00435   
+# 34 Probiotic T1       Lacticaseibacillus  0.00871   
+# 35 Probiotic T1       Lactiplantibacillus 0.0148    
+# 36 Probiotic T1       Limosilactobacillus 0.00397   
+# 37 Probiotic T10      Bacillus            0.00204   
+# 38 Probiotic T10      Lacticaseibacillus  0.00282   
+# 39 Probiotic T10      Lactiplantibacillus 0.0111    
+# 40 Probiotic T10      Limosilactobacillus 0.00121   
+# 41 Probiotic T12      Bacillus            0.00359   
+# 42 Probiotic T12      Lacticaseibacillus  0.000366  
+# 43 Probiotic T12      Lactiplantibacillus 0.0000496 
+# 44 Probiotic T12      Limosilactobacillus 0.000792  
+# 45 Probiotic T3       Bacillus            0.00423   
+# 46 Probiotic T3       Lacticaseibacillus  0.000895  
+# 47 Probiotic T3       Lactiplantibacillus 0.00692   
+# 48 Probiotic T3       Limosilactobacillus 0.00270   
+# 49 Probiotic T5       Bacillus            0.00163   
+# 50 Probiotic T5       Lacticaseibacillus  0.00237   
+# 51 Probiotic T5       Lactiplantibacillus 0.00475   
+# 52 Probiotic T5       Limosilactobacillus 0.00221   
+# 53 Probiotic T7       Bacillus            0.00218   
+# 54 Probiotic T7       Lacticaseibacillus  0.00602   
+# 55 Probiotic T7       Lactiplantibacillus 0.0103    
+# 56 Probiotic T7       Limosilactobacillus 0.00211 
+
+# # A tibble: 8 × 3
+# # Groups:   Treatment [2]
+# Treatment genus               mean_abund
+# <chr>     <chr>                    <dbl>
+#   1 Placebo   Bacillus             0.00302  
+# 2 Placebo   Lacticaseibacillus   0.00434  
+# 3 Placebo   Lactiplantibacillus  0.0000324
+# 4 Placebo   Limosilactobacillus  0.000293 
+# 5 Probiotic Bacillus             0.00318  
+# 6 Probiotic Lacticaseibacillus   0.00328  
+# 7 Probiotic Lactiplantibacillus  0.00693  
+# 8 Probiotic Limosilactobacillus  0.00229 
+
+# Treatment Sampling Bacillus Lacticaseibacillus Lactiplantibacillus Limosilactobacillus
+# <chr>     <chr>       <dbl>              <dbl>               <dbl>               <dbl>
+#   1 Placebo   T0       0.00217            0.000104          0                    0.000492 
+# 2 Placebo   T1       0.00242            0.00304           0                    0.0000672
+# 3 Placebo   T10      0.000503           0.000309          0                    0.000106 
+# 4 Placebo   T12      0.0103             0.00382           0                    0.000289 
+# 5 Placebo   T3       0.00203            0.00266           0.000266             0.000121 
+# 6 Placebo   T5       0.000913           0.0181            0.00000416           0.000819 
+# 7 Placebo   T7       0.00180            0.00134           0                    0.000158 
+# 8 Probiotic T0       0.00431            0.00155           0.000120             0.00293  
+# 9 Probiotic T1       0.00435            0.00871           0.0148               0.00397  
+# 10 Probiotic T10      0.00204            0.00282           0.0111               0.00121  
+# 11 Probiotic T12      0.00359            0.000366          0.0000496            0.000792 
+# 12 Probiotic T3       0.00423            0.000895          0.00692              0.00270  
+# 13 Probiotic T5       0.00163            0.00237           0.00475              0.00221  
+# 14 Probiotic T7       0.00218            0.00602           0.0103               0.00211
+#citations####
+#R base
+R.version
+citation()
+packageVersion("")
+
+packageVersion("phyloseq")
+packageVersion("ggplot2")
+packageVersion("plyr")
+packageVersion("dplyr")
+packageVersion("tidyverse")
+packageVersion("microbiome")
+packageVersion("viridis")
+packageVersion("RColorBrewer")
+packageVersion("ggpubr")
+packageVersion("rstatix")
+citation("rstatix")
+packageVersion("randomcoloR")
+packageVersion("DESeq2")
+packageVersion("vegan")
+packageVersion("ggpubfigs")
+citation("ggpubfigs")
+
+#TO DO####
+
+
+#RNA - sunday
+#taxa of interest - make one multipanel - DONE, could be prettier though
+##describe the taxa of interests for all time points, kind of DONE
+
+#differential abundance (lefse)
+#each treatment by itself to test for differences in time points DONE
+#differences between treatments T0/T1/T10 and T12 
+#alpha div + statistics - DONE
+#beta div - genus level. plots all time points figures- DONE also subset DONE
+#adonis on pcoa - are the groups different from each other - DONE (maybe need to plot it, at least with the centroids for each time point. I can separate the Treatments into two plots)
+#on pcoa - which groups are different from each other? DONE
+#top 22 genera  - put unclassified as "other" DONE
+#check material and methods
+#statistics time series
+#https://www.researchgate.net/post/how_do_we_measure_the_similarity_between_two_time_series_depending_on_magnitude
+
+
+#species extraction####
+otu_table(lact_abund)
+lact_abund <- transform_sample_counts(lact, function(x) x / sum(x) )
+lact_species <- tax_glom(lact_abund, taxrank = "species", NArm = TRUE)
+lact_species_speciesP <- subset_taxa(lact_abund, genus %in% c("Lactiplantibacillus"))
+species.df.test <- psmelt(lact_species_speciesP)
+head(species.df.test)
+names(species.df.test)  # to choose factors you want to use to navigate
+
+MySummaryspecies <- species.df.test %>%
+  group_by(Treatment, Sampling, species) %>%
+  summarize(mean_abund = mean(Abundance, na.rm=TRUE)) 
+head(MySummaryspecies)   
+MySummaryspecies_wide <- pivot_wider(MySummaryspecies, names_from = species, values_from = mean_abund)
+
+write.csv(MySummaryspecies, "abundance.Fprausnitzii.csv")
+write.csv(MySummaryspecies_wide, "abundance.Fprausnitzii.wide.csv")
+
+#genus
+ps_genus <- tax_glom(physeq_abund, taxrank = "genus", NArm = FALSE)
+ps_genusP <- subset_taxa(physeq_abund, genus %in% c("Bacillus", "Lactiplantibacillus",
+                                                              "Limosilactobacillus", "Lacticaseibacillus"))
+ps_genusP
+genus.df <- psmelt(ps_genusP)
+head(genus.df)
+names(genus.df)  # to choose factors you want to use to navigate
+View(genus.df)
+detach(package:plyr)    
+MySummaryGenus <- genus.df %>%
+  dplyr::group_by(Treatment, Sampling, species) %>%
+  dplyr::summarize(mean_abund = mean(Abundance, na.rm=TRUE)) 
+head(MySummaryGenus)     
+MySummaryGenus
+?pivot_wider()
+MySummaryGenus_wide <- pivot_wider(MySummaryGenus, names_from = species, values_from = mean_abund)
+
+MySummaryGenus_wide
+
+write.csv(MySummaryGenus, "abundance.probiotic.genera.csv")
+write.csv(MySummaryGenus_wide, "abundance.probiotic.genera.wide.csv")
+
+
+#export Bacillus sequences####
+#relative abundance####
+#DADA2
+#getSequences(bacillus)[1:5]
+
+tax_table(bacillus)
+otu_table(bacillus)
+head(otu_table(bacillus))
+write.table(taxa_names(physeq_RNA_samp), "all.sequences.for.blast.csv")
+write.table(taxa_names(Lactobacillaceae), "Lactobacillaceae.sequences.for.blast.csv")
+Lactobacillaceae
